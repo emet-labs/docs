@@ -10,16 +10,19 @@ with `npx`.
 
 ## 1. Sanitize an export
 
-Point `grab` at a directory or file you already exported (a LangSmith export, an OTLP JSON
+Point `grab` at a file or directory you already exported (a LangSmith export, an OTLP JSON
 file, or plain span-shaped JSONL), and give it an output directory:
 
 ```sh
-npx @emetlabs/trace-grab grab ./langsmith-export --out ./corpus
+npx @emetlabs/trace-grab grab ./langsmith-export --out ./corpus --from langsmith
 ```
 
-The source format is auto-detected. Pass `--from langsmith`, `--from otlp`, or `--from
-generic` to override detection, or `--from langsmith-api` to pull directly from the LangSmith
-API (see [Sources](/trace-grab/sources)).
+A single file's format is auto-detected from its content, so `--from` is optional for a
+lone OTLP JSON or JSONL file. A directory is only ever read by the LangSmith export reader, so
+`--from langsmith` is required whenever the input is a directory — pointing `grab` at a
+directory without it exits with an actionable error rather than guessing. `--from
+langsmith-api` pulls directly from the LangSmith API instead of reading a file at all (see
+[Sources](/trace-grab/sources)).
 
 On first run, `trace-grab` writes a secret salt to `.trace-grab/salt` (mode `0600`) and prints
 a notice. **Keep this file.** It keeps token assignment stable across batches — lose it, and a

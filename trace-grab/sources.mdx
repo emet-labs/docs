@@ -9,9 +9,14 @@ description: "Reading file exports and the opt-in LangSmith API path."
 npx @emetlabs/trace-grab grab <path> --out ./corpus
 ```
 
-`grab` accepts a LangSmith export, an OTLP JSON file, or plain span-shaped JSONL, and
-auto-detects the format from file content. Override detection with `--from langsmith`,
-`--from otlp`, or `--from generic`.
+`grab` accepts a LangSmith export, an OTLP JSON file, or plain span-shaped JSONL.
+
+When `<path>` is a single file, its format is auto-detected from content; override it with
+`--from langsmith`, `--from otlp`, or `--from generic`. When `<path>` is a directory, only the
+LangSmith export reader can read it (it walks every `.json`/`.jsonl` file inside), so
+`--from langsmith` is required — auto-detection only inspects a single file, and a directory
+passed with any other `--from` (or none at all) exits with an actionable error instead of
+guessing.
 
 This is the recommended path: it needs no credentials, works offline, and `trace-grab` can't
 read anything beyond the files you handed it.

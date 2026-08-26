@@ -18,9 +18,9 @@ Reads, normalizes, sanitizes, and writes a bundle.
 
 | Flag | Description |
 | --- | --- |
-| `<input>` | Path to a file or directory to read. Required. |
+| `<input>` | Path to a file to read, or to a directory (LangSmith export only — requires `--from langsmith`). Required. |
 | `--out <dir>` | Directory to write the bundle to. Required. |
-| `--from <source>` | Force the source format instead of auto-detecting it. One of `langsmith-api`, `langsmith`, `otlp`, `generic`. |
+| `--from <source>` | Force the source format instead of auto-detecting it. One of `langsmith-api`, `langsmith`, `otlp`, `generic`. Auto-detection only inspects a single file; a directory `<input>` requires `--from langsmith` explicitly. |
 | `--since <iso>` | Keep only traces overlapping this ISO-8601 start bound. |
 | `--until <iso>` | Keep only traces overlapping this ISO-8601 end bound. |
 | `--max-traces <n>` | Cap the number of traces written (non-negative integer). |
