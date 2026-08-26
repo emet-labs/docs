@@ -1,0 +1,47 @@
+---
+title: "Sending your corpus"
+description: "There is no upload command — you send the bundle yourself."
+---
+
+`trace-grab` writes a bundle of plain files to a directory you name. There is no upload
+command, and `trace-grab` never contacts an Emet endpoint — there isn't one in the source.
+When you're ready to transfer it:
+
+```sh
+tar -czf corpus.tar.gz ./corpus
+curl -T corpus.tar.gz "<the URL we gave you>"
+```
+
+Or send it however your organization prefers — the corpus is a directory of files on your
+disk, and nothing about it requires Emet's infrastructure.
+
+## Before you send it
+
+Read `report.md` in the output directory first. It lists every field path `trace-grab`
+observed and its disposition, so you can confirm the result matches what you intend to share.
+If you're checking a specific value, `check` searches the finished bundle for it — see the
+[Quickstart](/trace-grab/quickstart).
+
+## Pseudonymization is not anonymization
+
+The output can be described as sanitized, de-identified, or pseudonymized — none of those
+words mean the corpus is anonymous. Stable pseudonyms can remain personal data when someone
+can be re-identified using the separately held keymap, the source data, or other information.
+See the [threat model](/trace-grab/threat-model) for the full scope of what tokenization does
+and does not protect against.
+
+## If something leaks
+
+Deny-by-default means the only way plaintext reaches the bundle is a field named in a
+`reveal` rule — and a misspelled or over-broad rule fails silently, producing a run that looks
+correct. If you find a leak after sending a corpus:
+
+1. **Quarantine on detection.** Move the affected batch out of the analysis path immediately.
+   No new derived artifacts are produced from it while it's under review.
+2. **Notify within one business day.** You'll be told what was found and where — which field,
+   which disposition rule let it through, and in how many records.
+3. **Delete on request.** Your call, no questions. The batch is removed and you get written
+   confirmation.
+4. **No propagation into derived artifacts.** Deletion isn't just the corpus file — any
+   candidate property the batch fed is not promoted, and aggregates or findings retained
+   after deletion are purged.

@@ -1,7 +1,24 @@
 ---
-title: "Overview"
-description: "What Sentinel is and where to go next."
+title: "Emet Labs documentation"
+description: "Documentation for Sentinel and trace-grab."
 ---
 
-Sentinel is a trace-verification platform. This documentation site is a
-scaffold; content will land here as the project's docs take shape.
+Emet Labs builds tools for making AI agent behavior verifiable. This site covers Sentinel, our
+verification platform, and trace-grab, the tool we use to collect trace data for that work
+without ever seeing anything sensitive.
+
+<CardGroup cols={2}>
+  <Card title="Sentinel" icon="shield-check" href="/sentinel">
+    Runtime verification for AI agents: check what a deployment actually did against rules you
+    define, and get an audit-ready answer.
+  </Card>
+  <Card title="trace-grab" icon="terminal" href="/trace-grab">
+    Not a product — a way to donate trace data to our research. Sanitizes and tokenizes
+    everything locally; you read and approve the output before anything is sent.
+  </Card>
+</CardGroup>
+
+## Getting help
+
+- **Sentinel** — [github.com/emet-labs/sentinel](https://github.com/emet-labs/sentinel)
+- **trace-grab** — [github.com/emet-labs/trace-grab](https://github.com/emet-labs/trace-grab)

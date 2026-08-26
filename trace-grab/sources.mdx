@@ -1,0 +1,61 @@
+---
+title: "Sources"
+description: "Reading file exports and the opt-in LangSmith API path."
+---
+
+## File exports (recommended)
+
+```sh
+npx @emetlabs/trace-grab grab <path> --out ./corpus
+```
+
+`grab` accepts a LangSmith export, an OTLP JSON file, or plain span-shaped JSONL, and
+auto-detects the format from file content. Override detection with `--from langsmith`,
+`--from otlp`, or `--from generic`.
+
+This is the recommended path: it needs no credentials, works offline, and `trace-grab` can't
+read anything beyond the files you handed it.
+
+## LangSmith API (convenience path)
+
+Set `LANGSMITH_API_KEY` in the environment, then name a project — the key is never accepted
+as a CLI flag:
+
+```sh
+LANGSMITH_API_KEY="…" npx @emetlabs/trace-grab grab --from langsmith-api my-project --out ./corpus
+```
+
+`LANGSMITH_ENDPOINT` optionally overrides the base URL from `https://api.smith.langchain.com`.
+`LANGSMITH_WORKSPACE_ID` is sent as `x-tenant-id` when an organization-scoped key requires it.
+
+This path makes exactly these requests against the configured LangSmith base URL, using plain
+`fetch` and refusing cross-origin redirects:
+
+- `GET /api/v1/sessions?name=<project>` — resolves the project name to its LangSmith session ID.
+- `POST /api/v1/runs/query` — fetches native run records with cursor pagination.
+
+`--since` and `--until` are applied locally, after the pull, by whole trace — not as a
+server-side per-run filter, which could return a child while omitting its root and silently
+truncate the trace.
+
+### Checkpointing and credential handling
+
+After every page, progress is written under `.trace-grab/langsmith-api/` (mode `0600`). Native
+run payloads in that checkpoint are encrypted using a key derived in memory from
+`LANGSMITH_API_KEY`; the original key is required to resume. The checkpoint is deleted only
+after the sanitized bundle is written successfully.
+
+Rate-limit responses honor `Retry-After` and otherwise use bounded exponential backoff.
+`LANGSMITH_API_KEY` is never stored, is excluded from the local reverse keymap, is blocked
+from pass-verbatim or revealed bundle fields, and is redacted from API error bodies before
+they reach the terminal.
+
+## Time and volume windows
+
+Every `grab` invocation accepts:
+
+- `--since <iso>` / `--until <iso>` — keep only traces overlapping this window.
+- `--max-traces <n>` — cap the number of traces written.
+
+Both are applied by whole trace, after the records are read, so a windowed or capped corpus
+never contains a child span without its root.

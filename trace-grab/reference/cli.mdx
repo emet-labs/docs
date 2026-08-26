@@ -1,0 +1,66 @@
+---
+title: "CLI reference"
+description: "Flags and options for grab and check."
+---
+
+## `grab`
+
+```txt
+trace-grab grab <input> --out <dir>
+  [--from langsmith-api|langsmith|otlp|generic]
+  [--since <iso>] [--until <iso>] [--max-traces <n>]
+  [--policy <path>]
+  [--salt-file <path>]
+  [--no-keymap]
+```
+
+Reads, normalizes, sanitizes, and writes a bundle.
+
+| Flag | Description |
+| --- | --- |
+| `<input>` | Path to a file or directory to read. Required. |
+| `--out <dir>` | Directory to write the bundle to. Required. |
+| `--from <source>` | Force the source format instead of auto-detecting it. One of `langsmith-api`, `langsmith`, `otlp`, `generic`. |
+| `--since <iso>` | Keep only traces overlapping this ISO-8601 start bound. |
+| `--until <iso>` | Keep only traces overlapping this ISO-8601 end bound. |
+| `--max-traces <n>` | Cap the number of traces written (non-negative integer). |
+| `--policy <path>` | Path to a policy file. Defaults to `tracegrab.yaml` in the current directory. |
+| `--salt-file <path>` | Path to the salt file. Defaults to `.trace-grab/salt`, created on first run. |
+| `--no-keymap` | Skip writing `.trace-grab/keymap.jsonl`. |
+
+`--api-key` is intentionally not supported — set `LANGSMITH_API_KEY` in the environment
+instead, so the key never appears in shell history or process listings.
+
+On success, `grab` prints how many records were written and how many traces were excluded by
+the time window or the trace cap.
+
+## `check`
+
+```txt
+trace-grab check --value <v> <bundle-dir> [--salt-file <path>]
+```
+
+Tokenizes `<v>` with the local salt, then searches `<bundle-dir>/corpus.jsonl` for both the
+resulting token and the plaintext value. Read-only — the searched value is never written to
+disk.
+
+| Flag | Description |
+| --- | --- |
+| `--value <v>` | The value to look up. Required. |
+| `<bundle-dir>` | Directory containing a `corpus.jsonl` written by `grab`. Required. |
+| `--salt-file <path>` | Path to the salt file, if not the default `.trace-grab/salt`. |
+
+Exit code is `0` when the value never appears in plaintext, and `1` when it does — suitable
+for gating CI on a known-sensitive value.
+
+```txt
+$ trace-grab check --value "alice@corp.com" ./corpus
+appears as TOK_88b0e13a5d in 14 records; never appears in plaintext
+```
+
+```txt
+$ trace-grab check --value "alice@corp.com" ./corpus
+PLAINTEXT FOUND in 2 records:
+  line 41: {"inputs":{"actor":"alice@corp.com", ...
+  line 302: {"outputs":{"notified":"alice@corp.com", ...
+```

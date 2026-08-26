@@ -1,0 +1,67 @@
+---
+title: "Quickstart"
+description: "Run your first grab and verify a value never appears in plaintext."
+---
+
+## Prerequisites
+
+`trace-grab` requires Node.js 20 or later. No installation step is required — run it directly
+with `npx`.
+
+## 1. Sanitize an export
+
+Point `grab` at a directory or file you already exported (a LangSmith export, an OTLP JSON
+file, or plain span-shaped JSONL), and give it an output directory:
+
+```sh
+npx @emetlabs/trace-grab grab ./langsmith-export --out ./corpus
+```
+
+The source format is auto-detected. Pass `--from langsmith`, `--from otlp`, or `--from
+generic` to override detection, or `--from langsmith-api` to pull directly from the LangSmith
+API (see [Sources](/trace-grab/sources)).
+
+On first run, `trace-grab` writes a secret salt to `.trace-grab/salt` (mode `0600`) and prints
+a notice. **Keep this file.** It keeps token assignment stable across batches — lose it, and a
+second corpus won't correlate with the first, with no error to notice.
+
+`grab` writes four files to the output directory:
+
+| File | Contents |
+| --- | --- |
+| `corpus.jsonl` | One sanitized record per line, in the [`trace-corpus-v1`](/trace-grab/reference/schema) shape. |
+| `manifest.json` | Corpus-level metadata: schema version, generator, digest, warnings. |
+| `policy.yaml` | A copy of the policy that produced this bundle (or the default, if none was given). |
+| `report.md` | Observed field paths and their dispositions, for review before you send anything. |
+
+## 2. Review before you send it
+
+Read `report.md` in the output directory. It lists every field path `trace-grab` observed and
+what happened to it — tokenized, revealed, dropped, or passed by default — so you can confirm
+the result before transfer.
+
+## 3. Verify a specific value never leaked
+
+`check` looks up a value's token in a finished bundle and searches for any plaintext
+occurrence, exiting non-zero if it finds one — useful for gating CI on a known-sensitive
+value:
+
+```sh
+npx @emetlabs/trace-grab check --value "alice@corp.com" ./corpus
+```
+
+```txt
+appears as TOK_88b0e13a5d in 14 records; never appears in plaintext
+```
+
+## 4. Send the bundle
+
+There is no upload command — see [Sending your corpus](/trace-grab/transfer) for how to
+transfer the bundle yourself.
+
+## Next steps
+
+- Narrow the default with [policy configuration](/trace-grab/policy) if a field needs to stay
+  in plaintext or be dropped entirely.
+- Read the [threat model](/trace-grab/threat-model) to understand what tokenization does and
+  does not protect against.

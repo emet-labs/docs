@@ -1,0 +1,127 @@
+---
+title: "Threat model"
+description: "What trace-grab protects against, and what it does not."
+---
+
+`trace-grab` reduces the amount of readable trace content in a corpus before that corpus
+leaves your environment. It does not make a trace corpus harmless, anonymous, or safe for
+unrestricted distribution.
+
+## Scope and trust boundary
+
+You control the source export, the machine running the CLI, `tracegrab.yaml`, the salt, the
+keymap, the output directory, and the decision to transfer the bundle. `trace-grab` sends
+nothing to Emet; any transfer is a separate action you perform yourself.
+
+File sources are read locally. The opt-in LangSmith API source contacts only the configured
+LangSmith base URL to fetch records — it does not upload a corpus. `trace-grab` has no Emet
+upload endpoint, telemetry, analytics, or error-reporting service.
+
+This model assumes the machine and operator are trustworthy while the tool runs. The source
+data and policy can contain mistakes, but they are not assumed to be actively malicious.
+
+## What the tool protects against
+
+With no policy, string values outside the documented pass-verbatim fields are replaced by
+stable `TOK_…` pseudonyms before the bundle is written. A string is readable in the bundle
+only when it belongs to one of those fields or a matching `reveal` rule. `drop` removes an
+optional field, including its linkage; required fields can't be removed and fail closed as
+described in [Policy configuration](/trace-grab/policy). The generated `report.md` lists
+observed paths and plaintext dispositions so you can inspect the result before transfer.
+
+These controls reduce accidental disclosure of string content you didn't choose to reveal.
+They do not inspect whether a value "looks sensitive," classify personal data, or prove that a
+configured policy is appropriate.
+
+## Information that remains visible
+
+The bundle deliberately retains structure needed for analysis:
+
+- **Tool, span, and run names pass verbatim.** A name such as `notify_bankruptcy_counsel` can
+  disclose sensitive business or personal context on its own. Span kind, status,
+  `error.kind`, and source vendor also pass.
+- **Object keys and native label keys pass verbatim.** Input, output, attribute, and
+  unmapped-field names reveal the application's schema, while label keys reveal its annotation
+  vocabulary, even when associated values are tokenized or dropped.
+- **Linkage survives tokenization.** Equal source strings receive equal tokens. Trace
+  topology, parent/child relationships, links, ordering, and repeated-value frequency remain
+  visible — this is the analytical purpose of tokenization, and also a disclosure class. Use
+  `drop` when the relationship itself must not survive.
+- **Numbers and booleans pass by default.** They can carry sensitive meaning even though
+  they're not string content.
+- **Timing and volume remain observable.** With the default `time: absolute`, absolute
+  timestamps, intervals, ordering, and record counts are visible. `time: shift` removes
+  absolute position but preserves intervals and ordering — it does not hide traffic volume.
+- **Explicit reveals are plaintext.** A `reveal` rule is an instruction to include matching
+  values, not a hint the tool may override.
+
+Stable tokens can also support inference from repetition, surrounding structure, timing,
+volume, or outside knowledge. Tokenization is not encryption of the corpus and does not claim
+to prevent such inference.
+
+## Salt and keymap
+
+The salt keeps token assignment stable across batches. The optional
+`.trace-grab/keymap.jsonl` maps tokens back to their original values so you can interpret
+findings — it's a re-identification file stored on your disk with mode `0600`, and the CLI
+never includes it in the bundle. `--no-keymap` prevents its creation.
+
+Anyone who obtains the keymap can recover every value recorded there. Protect it separately
+from the transferred corpus. The tool doesn't manage backups, access control beyond local file
+mode, retention, or deletion of your local files.
+
+## Pseudonymization is not anonymization
+
+The output can be described operationally as sanitized, de-identified, or pseudonymized. None
+of those words means `trace-grab` produces anonymous information. Stable pseudonyms can remain
+personal data when a person can be identified using the separately held keymap, the source
+data, or other information.
+
+The UK Information Commissioner's Office states that pseudonymized personal data remains
+within data-protection law for a party that holds the additional identifying information; it
+describes pseudonymization as a risk-reduction and security measure, not a way to make the law
+stop applying. `trace-grab` does not make legal determinations and never claims to produce
+"fully anonymized" data.
+
+## Threats this tool does not address
+
+`trace-grab` does not defend against:
+
+- a compromised machine, runtime, dependency, shell, filesystem, or user account;
+- an operator who deliberately reveals or transfers sensitive fields;
+- a mistaken, over-broad, or malicious policy;
+- access to the original export, salt, keymap, API credential, or other local files;
+- re-identification or inference using visible names, keys, topology, linkage, timing, volume,
+  or outside information;
+- denial-of-service inputs, resource exhaustion, or an unavailable source API;
+- false, incomplete, or misleading source telemetry; or
+- tampering after generation — the manifest's digest detects corpus changes when checked
+  against a trusted manifest, but it isn't a signature and doesn't establish authorship.
+
+The tool also does not upload, approve, retain, or delete a transferred corpus on anyone
+else's behalf. Those are operational and governance responsibilities outside this CLI.
+
+## Verifiable claims
+
+Each claim below is something to check yourself, not a promise to take on faith.
+
+| Claim | Verify |
+| --- | --- |
+| Never contacts an Emet endpoint — there is none in the source | `grep -ri emet src/` prints nothing |
+| No telemetry, analytics, or update check | `grep -riE "telemetry\|analytics\|update.?check" src/` prints nothing |
+| No `postinstall` script | `jq '.scripts.postinstall // "absent"' package.json` → `"absent"` |
+| One runtime dependency | `jq '.dependencies \| length' package.json` → `1` |
+| No network primitive outside the single fetcher module | `bun test test/no-egress.test.ts` |
+| No Bun-specific API in shipped `src/` — runs under plain Node ≥ 20 | `bun test test/no-egress.test.ts` |
+| The corpus leaves your machine only when you send it | there's no upload command |
+
+The published package carries SLSA provenance — a build attestation tying the tarball to a
+commit and a workflow run, signed via sigstore. Verify the "Provenance" badge on the
+[npm package page](https://www.npmjs.com/package/@emetlabs/trace-grab) or the entry in the
+[sigstore transparency log](https://search.sigstore.dev). Publishing uses GitHub OIDC trusted
+publishing — no npm access token is stored or used.
+
+## If the configuration leaks something
+
+See [Sending your corpus](/trace-grab/transfer#if-something-leaks) for the committed response
+sequence.

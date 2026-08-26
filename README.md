@@ -1,6 +1,8 @@
 # docs
 
-Documentation site for [Sentinel](https://github.com/emet-labs/sentinel), built with [Mintlify](https://mintlify.com).
+Documentation site for Emet Labs' products — [Sentinel](https://github.com/emet-labs/sentinel)
+and [trace-grab](https://github.com/emet-labs/trace-grab) — built with
+[Mintlify](https://mintlify.com).
 
 ## Development
 

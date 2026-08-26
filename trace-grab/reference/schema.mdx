@@ -1,0 +1,96 @@
+---
+title: "Corpus schema"
+description: "The trace-corpus-v1 record shape."
+---
+
+`trace-corpus-v1` describes two value-spaces that share one structure:
+
+- **Generic JSONL input** — one `RawRecord` per line, in the vendor's original strings.
+- **The output corpus** — one `CorpusRecord` per line, structurally identical to `RawRecord`.
+  The only difference is that string values outside the pass-verbatim fields below have been
+  replaced with opaque tokens.
+
+Sanitization is a pure function `RawRecord -> CorpusRecord`, one record at a time, with no
+cross-record state.
+
+<Note>
+`trace-grab` does not perform a requested/completed event split, derive causal edge classes,
+or apply observation-time rules. One record is one source span, exactly as the vendor shaped
+it — that classification is downstream analysis tooling's job, not this CLI's.
+</Note>
+
+## Record shape
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `string` | Unique within the corpus. |
+| `trace_id` | `string` | Shared by every record in the same trace. |
+| `parent_id` | `string \| null` | `null` for a root span. May reference an `id` absent from this corpus. |
+| `name` | `string` | Tool / span / run name, as given by the vendor. |
+| `kind` | `string` | Vendor's own run/span type string — not a fixed enum (`"llm"`, `"tool"`, `"chain"`, an OTLP span kind, ...). |
+| `start` | `string` | ISO-8601, UTC. |
+| `end` | `string \| null` | ISO-8601, UTC. `null` if the vendor recorded no end. |
+| `status` | `"unset" \| "ok" \| "error"` | Normalized onto OTLP's three-value status model. |
+| `error` | `{ kind: string; message: string } \| null` | `null` when `status != "error"` or the vendor gave nothing. |
+| `inputs` | JSON value | Arbitrary nested JSON, vendor-shaped. Not flattened. |
+| `outputs` | JSON value | Same shape rules as `inputs`. |
+| `attributes` | `Record<string, JSON value>` | Structured, recognized vendor metadata — OTel-style. |
+| `labels` | `Label[]` | Native annotations only. |
+| `links[]` | `Link[]` | OTLP link object: `{ trace_id, span_id, attributes }`. `[]` when the source has no link concept. |
+| `unmapped` | `Record<string, JSON value>` | Source fields the normalizer didn't recognize, preserved verbatim in shape. |
+| `source` | `{ vendor: string }` | Which parser produced this record, e.g. `"langsmith"`, `"otlp"`. |
+
+`Label` is `{ key: string; value: JSON value; comment: string | null }` — `key`/`value` carry
+the annotation itself (e.g. `key: "correctness"`, `value: "correct"`), and `comment` is free
+text a human typed alongside it.
+
+## Default dispositions
+
+This is the default `RawRecord -> CorpusRecord` mapping with zero `tracegrab.yaml`
+configuration — see [Policy configuration](/trace-grab/policy) for how to override it per
+field.
+
+| Field | Default | Why |
+| --- | --- | --- |
+| `id`, `trace_id`, `parent_id`, `links[].trace_id`, `links[].span_id` | Tokenized | Strings, including ids. Tokenization is value-derived and salt-stable, so equal ids still produce equal tokens — topology survives. |
+| `name`, `kind` | Pass verbatim | The vocabulary any candidate property is expressed in. |
+| `start`, `end`, numbers, booleans | Pass | Typed passthrough, not string values. |
+| `status`, `error.kind` | Pass | Categorical signal, not prose. |
+| `error.message` | Tokenized | Free text. |
+| Object/array keys under `inputs`, `outputs`, `attributes`, `unmapped` | Pass | Keys are schema, not data. |
+| Leaf string values under `inputs`, `outputs`, `attributes`, `unmapped` | Tokenized | Default string rule, applied per leaf — `unmapped` gets the same walk as `attributes`. |
+| `labels[].key`, `labels[].value` | Pass verbatim | Categorical ground-truth signal (success/failure/human-intervention). If a vendor's `value` ever holds prose instead of a short label, `drop: labels.value` is the escape hatch. |
+| `labels[].comment` | Tokenized | Free text a human typed. |
+| `source.vendor` | Pass verbatim | Never partner content — assigned by which parser ran, from a closed set the CLI controls. |
+
+## Causality: copied, never derived
+
+`parent_id` plus optional `links[]` are copied exactly as the source gave them — nothing is
+inferred. A `parent_id` may point to an `id` that never appears in this corpus, because the
+source export was partial, because time/trace-count limiting excluded it, or because the
+vendor's own data is incomplete. `trace-grab` preserves this rather than repairing it;
+`manifest.json`'s `dangling_parents` count makes it visible.
+
+Because tokenization is value-derived rather than corpus-relative, a dangling `parent_id`'s
+token still equals the token of the record it points to, if that record exists anywhere under
+the same salt — including in a different batch.
+
+## Timestamps
+
+`start` and `end` are ISO-8601 strings, UTC, at whatever sub-second precision the vendor gave
+(LangSmith: milliseconds; OTLP: converted from unix nanos). `tracegrab.yaml`'s `time: shift`
+applies a single constant, salt-derived, per-corpus offset to every `start`/`end` value —
+ordering and every interval survive; absolute position doesn't.
+
+## Manifest
+
+One `manifest.json` per bundle, alongside `corpus.jsonl` — corpus-level metadata generated by
+`grab`, not copied from partner content.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `schema_version` | `string` | `"trace-corpus-v1"`. |
+| `generator` | `{ name: string; version: string }` | The tool and version that produced this bundle. |
+| `generated_at` | `string` | ISO-8601, when `grab` ran. |
+| `source` | `{ vendor: string }` | Same vendor tag as each record's `source.vendor`. |
+| `warnings` | `string[]` | Unmatched policy rules and other non-fatal notices. |

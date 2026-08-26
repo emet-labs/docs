@@ -1,0 +1,68 @@
+---
+title: "Overview"
+description: "Donate sanitized trace data to Emet Labs' research — nothing leaves your machine until you send it."
+---
+
+trace-grab isn't a product, and it isn't really a general-purpose tool either. It's how you
+donate traces to Emet Labs' research without handing over anything sensitive.
+
+Point it at a trace export you already have. It reads the export, replaces every string value
+with a stable token, and writes a plain JSONL bundle to a folder on your own disk — no server,
+no account, no upload step. There's no code path in the source that could send your data
+anywhere else; that claim is checkable, not something we're asking you to trust (see the
+[threat model](/trace-grab/threat-model)).
+
+```sh
+npx @emetlabs/trace-grab grab ./langsmith-export --out ./corpus
+```
+
+Read the output before you decide anything. `report.md`, written alongside the bundle, lists
+every field the tool saw and what happened to it: tokenized, revealed, dropped, or passed
+through untouched. If it looks right, send it our way. If it doesn't, delete the folder — none
+of it was ever transmitted.
+
+## What actually changes in your data
+
+The default is aggressive: every string becomes a token unless it belongs to a short,
+documented list of fields — tool and span names, status codes — that carry no content on
+their own. Numbers, booleans, and timestamps pass through untouched, because they're rarely
+what makes a trace sensitive.
+
+```jsonc
+// before
+{ "name": "modify_account", "inputs": { "account": "acct_1208", "actor": "alice@corp.com" } }
+
+// after
+{ "name": "modify_account", "inputs": { "account": "TOK_4f1ab9c072", "actor": "TOK_88b0e13a5d" } }
+```
+
+The same value always maps to the same token. That's the point: two records mentioning
+`acct_1208` still show the same token in both, so the shape of your traces survives even
+though the content doesn't. Nobody holding your bundle alone can work backward to
+`acct_1208` — only you can, with the salt and keymap that stay on your machine.
+
+## Why this exists
+
+Sentinel gets built and tested against real trace data, and most partners can't just hand
+over raw logs — they hold customer data, internal tool names, sometimes healthcare or
+financial content. trace-grab is what we point people to instead: run it yourself, keep what
+lets you read your own output back, and send the bundle only once you're comfortable with
+what's in it.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/trace-grab/quickstart">
+    Run your first `grab` and `check`.
+  </Card>
+  <Card title="Policy configuration" icon="sliders" href="/trace-grab/policy">
+    Reveal, tokenize, or drop specific fields with `tracegrab.yaml`.
+  </Card>
+  <Card title="Corpus schema" icon="table" href="/trace-grab/reference/schema">
+    The `trace-corpus-v1` record shape.
+  </Card>
+  <Card title="Threat model" icon="shield-halved" href="/trace-grab/threat-model">
+    What this protects against, and what it doesn't.
+  </Card>
+</CardGroup>
+
+Zero configuration is already a safe configuration — strings tokenize, everything else passes.
+[Policy configuration](/trace-grab/policy) covers narrowing that further, field by field.
