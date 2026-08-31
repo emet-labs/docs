@@ -36,6 +36,7 @@
           {
             "group": "Reference",
             "pages": [
+              "sentinel/reference/patterns",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]

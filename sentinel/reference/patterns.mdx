@@ -1,0 +1,167 @@
+---
+title: "Pattern catalogue"
+description: "The temporal patterns you can instantiate as Sentinel specifications, their parameters, and their evidence requirements."
+---
+
+Sentinel specifications are instantiated from a catalogue of patterns. Each pattern is a
+reusable temporal property with a fixed parameter schema: you bind its parameters to your own
+event kinds and attribute keys, bind its evidence roles to your deployed sources, and the
+result compiles to a monitor and an event filter.
+
+The catalogue currently holds two patterns, one from each flagship property family:
+
+| ID | Pattern | Shape | What it checks |
+| --- | --- | --- | --- |
+| `precedence.approval` | Causal precedence with approval binding | Precedence | An event never occurs unless a qualifying event for the same binding lies in its causal past. |
+| `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
+
+Both patterns evaluate on the hot path with an event-local scope: each obligation is raised
+and settled at a single trigger event, over that event's causal past.
+
+## precedence.approval
+
+Formula: `AG(trigger -> EP(requirement))`.
+
+Use this pattern when an action must be causally preceded by an authorization for the same
+unit of work. Typical uses: a mutation requires a prior blast-radius approval, a trade fill
+requires a prior margin reservation, a request is processed only after a policy engine
+evaluated an allow for it.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. Each binding gets its own slice and its own verdict. |
+| `trigger` | selector | Events that create the obligation. One obligation per matching event per binding. |
+| `requirement` | selector | Events that discharge the obligation. A matching event must lie in the trigger's causal past. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `requirement_source` | Anchor | Causal edges, completeness signals |
+| `trigger_source` | Contributing | None |
+
+A violation here rests on the *absence* of a requirement event, so the requirement source
+must sit at anchor tier. Without an anchor-tier candidate, Sentinel demotes the violation to
+`Inconclusive(prefix)` instead of settling it. The trigger witnesses itself, so a
+contributing-tier trigger source suffices.
+
+## provenance.taint
+
+Formula: `AG(action -> !EP(untrusted_content))`.
+
+Use this pattern when an action must not be influenced by untrusted content: no event
+matching the untrusted-content selector may lie in the action's causal past for the same
+binding. Typical uses: an agent must not send an email, execute a tool call, or commit a
+change after reading content from an untrusted origin in the same workflow.
+
+The untrusted-content selector matches a marker event that your instrumentation emits when
+untrusted content is ingested. The taint predicate is an attribute on that marker event, not
+an inspection of raw content.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The question is not whether untrusted content was read anywhere, but whether it reached this binding's action. |
+| `action` | selector | Events whose provenance is constrained. One obligation per matching event per binding. |
+| `untrusted_content` | selector | Events marking the ingestion of untrusted content. A match falsifies the property when it lies in an action's causal past. It may match freely elsewhere in the trace. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `action_source` | Anchor | Causal edges |
+| `content_source` | Anchor | Causal edges, completeness signals |
+
+Both roles demand anchor tier, and the requirement is stricter than `precedence.approval`'s
+on purpose. A `Satisfy` here is a claim about the action's own ancestry: that nothing
+untrusted reached it. A source inside the monitored application declaring its own inputs
+clean is the suppression failure the tier model exists to catch.
+
+### How verdicts settle
+
+For each action event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| An untrusted-content event lies in the action's causal past, witnessed at anchor tier | `Violate` |
+| An untrusted-content event lies in the action's causal past, witnessed at contributing tier only | `Inconclusive(prefix)` |
+| An untrusted-content event is concurrent with the action | `Inconclusive(observational)` |
+| No such event either way, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+Presence is tested before tier, and the tier test can never reach `Satisfy`. A genuine
+violation witnessed only at contributing tier downgrades to `Inconclusive` rather than
+silently passing. Evidence that is too weak to convict is never reported as success.
+
+### Current status
+
+`provenance.taint` is declared, lowered, and decidable: instantiation, filter compilation,
+and the decision table all ship. End-to-end verdict evaluation is not yet wired for this
+pattern, so no verdicts are produced for it today. Instantiations validate and compile now
+and become live monitors when the evaluator generalizes beyond precedence.
+
+## Instantiating a pattern
+
+Bind every declared parameter and every evidence role, then call `instantiate`. This example
+instantiates `provenance.taint` for an agent that sends email after ingesting content:
+
+```rust
+use std::collections::BTreeMap;
+
+use sentinel_compile::catalogue::{
+    instantiate, EvidenceBinding, ParameterValue, PatternId, SelectorValue,
+};
+
+let arguments = BTreeMap::from([
+    (
+        "binding_attribute".to_owned(),
+        ParameterValue::AttributeKey("example.request.id".to_owned()),
+    ),
+    (
+        "action".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.email.sent")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "untrusted_content".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.content.ingested")?,
+            BTreeMap::from([(
+                "example.content.trust".to_owned(),
+                AttributeValue::String("untrusted".to_owned()),
+            )]),
+        )),
+    ),
+]);
+
+let evidence = BTreeMap::from([
+    (
+        "action_source".to_owned(),
+        EvidenceBinding::new(mail_gateway, SourceTier::Anchor, capabilities.clone()),
+    ),
+    (
+        "content_source".to_owned(),
+        EvidenceBinding::new(content_broker, SourceTier::Anchor, capabilities),
+    ),
+]);
+
+let instance = instantiate(
+    PatternId::ProvenanceTaint,
+    identity,
+    contract,
+    arguments,
+    evidence,
+)?;
+```
+
+A missing or mistyped parameter is an error: the instantiation is refused. A source placed
+below the tier its role demands is a warning, because the required tier is a specification
+property while the placement is a deployment fact. Selector values are checked for shape,
+not for existence: a well-formed attribute key that no producer emits compiles cleanly and
+matches nothing, so validate an instance against settled evidence before promoting it.
