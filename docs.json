@@ -37,6 +37,7 @@
             "group": "Reference",
             "pages": [
               "sentinel/reference/patterns",
+              "sentinel/reference/candidates",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]

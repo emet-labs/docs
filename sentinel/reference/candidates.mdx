@@ -1,0 +1,263 @@
+---
+title: "Candidate generation"
+description: "How Sentinel turns intent artifacts into catalogue-constrained candidate specifications with provenance, replay evidence, and promotion blockers."
+---
+
+A candidate is a proposed pattern instantiation that is not yet a specification. Sentinel
+generates candidates from intent artifacts: documents you already have, such as agent system
+prompts, tool schemas, policies, and runbooks. Every candidate is an instantiation of a
+catalogued pattern, never raw monitor IR, and every candidate carries the provenance and
+replay evidence a reviewer needs to judge it.
+
+Generation never promotes anything. A candidate becomes a specification only through a
+reviewed promotion, which is a separate, later decision.
+
+<Note>
+Candidate generation ships as a library today. Nothing persists, serves, or renders
+candidates yet, and promotion and warming shadow deployment are not yet available. This page
+documents the generation pipeline and the evidence model so you can evaluate candidates
+programmatically.
+</Note>
+
+## How generation works
+
+A single entry point, `generate`, runs the whole pipeline deterministically. It reads no
+clock and opens no file:
+
+1. A proposal source returns proposals against the pattern catalogue's grammar, the supplied
+   intent artifacts, and the vocabulary of the replay corpus.
+2. Admission resolves each proposal against the catalogue and binds its parameters and
+   evidence roles. The catalogue's own validation applies, so a blank attribute key, an
+   undeclared parameter, or an unbound evidence role is refused with the pattern and
+   parameter named.
+3. The citation check verifies that every proposal quotes its intent artifacts verbatim.
+4. Grounding compares everything the candidate depends on against what the replay corpus
+   actually carries.
+5. Replay evaluates the admitted instantiation over every trace in the corpus and folds the
+   verdicts into a would-fire rate.
+6. Promotion blockers and advisories are computed once, at construction.
+
+A malformed proposal becomes a rejection in the generation report, never an error. One bad
+proposal cannot suppress the good ones beside it. Generation returns an error only when the
+proposal source could not answer at all.
+
+## Intent artifacts
+
+An intent artifact is something you already wrote that states what your system is supposed to
+do. Four kinds exist:
+
+| Kind | Identifier | Example |
+| --- | --- | --- |
+| System prompt | `system-prompt` | An agent's operating instructions |
+| Tool schema | `tool-schema` | A tool or function schema the agent is given |
+| Policy | `policy` | A written policy the deployment is expected to follow |
+| Runbook | `runbook` | An operational runbook |
+
+An artifact with empty or whitespace-only text is refused at construction, because nothing
+could ever be cited out of it.
+
+### Citations
+
+Every proposal must cite at least one intent artifact. A citation carries an anchor: text
+that must occur verbatim in the artifact it names. Three rules apply:
+
+- Matching collapses runs of whitespace to a single space and trims both sides, so a
+  reflowed document still matches a reflowed quotation.
+- The anchor must carry at least 24 characters after collapsing. Shorter anchors occur in
+  almost any document and establish nothing.
+- The recorded byte range indexes the original artifact text, not the collapsed form, so a
+  review surface can render the quotation in place.
+
+A checked citation buys traceability, not hallucination detection. It guarantees a candidate
+never carries a quotation that is not in the artifact, so a reviewer reads your own words
+rather than a paraphrase. It does not tie the quotation to the proposal's semantics.
+
+Unicode normalization is not applied. Smart quotes and en dashes in a quotation can cause a
+false rejection, and the generation report counts citation refusals separately so you can
+subtract a known number instead of attributing them to the proposal source.
+
+## Proposal sources
+
+A proposal source is anything that implements the `ProposalSource` trait: it identifies
+itself and returns proposals for a request. Three kinds are distinguished, and the kind is
+copied into every candidate's provenance:
+
+| Kind | Identifier | What it is |
+| --- | --- | --- |
+| Recorded | `recorded` | A recording of an earlier run, replayed byte for byte |
+| Scripted | `scripted` | Proposals written in code, in memory |
+| Model | `model` | A model answering live |
+
+Each generation run takes a proposal budget, which is non-zero by type. Each admitted
+proposal costs a full corpus replay, so the budget is the only backstop on that fan-out. A
+source that returns more proposals than the budget accepts has the surplus dropped, and the
+drop is reported in the generation report rather than hidden.
+
+## The proposal grammar
+
+A proposal binds each declared pattern parameter to one of two value shapes:
+
+- An attribute key, such as `sagashop.order.id`.
+- A selector: an event kind plus the string-valued attribute valuations a matching event
+  must carry.
+
+Monitor IR is not expressible in this grammar, so a proposal source cannot emit it whatever
+it produces. Values are strings at this boundary on purpose: a misspelled event kind has to
+survive long enough to be reported as a near miss, with the exact string the reviewer needs
+to see.
+
+Evidence roles bind a source identity only. Assurance tier and capabilities are deployment
+facts, read from the replay corpus's own evidence and never from the proposal. A proposal
+claiming a tier would be a candidate asserting its own trustworthiness.
+
+## Replay evidence and the would-fire rate
+
+Every admitted candidate is replayed over the full corpus. The headline number is the
+would-fire rate: of the bindings that reached a verdict, how many settled as violations.
+
+The rate is reported as exact counts over a non-zero denominator, never as a float, and it
+cannot be constructed as `0 / 0`. When there is no rate, the reason is stated instead:
+
+| Reason | Meaning |
+| --- | --- |
+| Nothing examined | No trace in the corpus held an event |
+| Never exercised | Evidence was examined and the candidate raised no obligation anywhere |
+| Obligations withheld | Obligations were raised and every verdict was withheld |
+| Replay limited | The replay could not run at all |
+
+Missing evidence is never a pass. A candidate that would fire on nothing, or whose selector
+names something no producer emits, is a defect to surface, and each of these reasons is a
+promotion blocker.
+
+## Promotion blockers and advisories
+
+Blockers gate; advisories never do. `promotion_blockers()` must be empty for a candidate to
+be offered for promotion, and the list is computed once at construction so two callers cannot
+reach different answers.
+
+| Blocker | Meaning |
+| --- | --- |
+| Nothing examined | The validation corpus held no events |
+| Never exercised | The candidate raised no obligation on any trace |
+| Obligations withheld | Obligations were raised and no verdict settled |
+| Replay limited | The replay could not run |
+| Requires new evidence | The candidate depends on event kinds or attribute keys the corpus never carried |
+| Selector near miss | A bound value is within two edits of a value the corpus does carry |
+| Adversarial validation not run | The required adversarial gate has not run yet |
+| Adversarial validation incomplete | Injected violations were not all caught |
+
+The near-miss blocker is the tiebreaker between two situations that produce identical replay
+silence: *no producer emits this yet*, which warming in a shadow deployment resolves, and
+*this is misspelled*, which warming can never resolve. A near miss reports only values the
+corpus does not carry, with the nearest values it does.
+
+Advisories are recorded and shown to review but do not gate:
+
+- **Tier shortfall**: a source is placed below the tier its evidence role demands. Placement
+  is a deployment fact, so the honest response is to say so, not to refuse.
+- **Capability shortfall**: a source does not assert a capability its evidence role depends
+  on.
+
+Adversarial validation is a required promotion gate but does not execute yet. It ships as a
+standing blocker so it cannot be forgotten, and no candidate can reach promotion without it.
+
+## Generating candidates
+
+This example scripts one proposal against the `precedence.approval` pattern, cites a system
+prompt, and generates against a replay corpus you have already built:
+
+```rust
+use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+
+use sentinel_candidate::{
+    generate, ArtifactId, ArtifactKind, CandidateNaming, IntentArtifact,
+    ProposalBudget, ProposalSourceIdentity, ProposalSourceKind, ProposedCitation,
+    ProposedSource, ProposedValue, RawProposal, ScriptedProposals,
+};
+
+let prompt = IntentArtifact::new(
+    ArtifactId::new("order-agent-system-prompt")?,
+    ArtifactKind::SystemPrompt,
+    prompt_text,
+)?;
+
+let proposal = RawProposal {
+    pattern: "precedence.approval".to_owned(),
+    arguments: BTreeMap::from([
+        (
+            "binding_attribute".to_owned(),
+            ProposedValue::AttributeKey("sagashop.order.id".to_owned()),
+        ),
+        (
+            "trigger".to_owned(),
+            ProposedValue::Selector {
+                kind: "sagashop.order.ship.requested".to_owned(),
+                required_attributes: BTreeMap::new(),
+            },
+        ),
+        (
+            "requirement".to_owned(),
+            ProposedValue::Selector {
+                kind: "sagashop.payment.charge.completed".to_owned(),
+                required_attributes: BTreeMap::from([(
+                    "sagashop.payment.status".to_owned(),
+                    "success".to_owned(),
+                )]),
+            },
+        ),
+    ]),
+    evidence: BTreeMap::from([
+        (
+            "trigger_source".to_owned(),
+            ProposedSource {
+                monitored_application: "sagashop-order".to_owned(),
+                source: "sagashop-capture".to_owned(),
+            },
+        ),
+        (
+            "requirement_source".to_owned(),
+            ProposedSource {
+                monitored_application: "sagashop-payment".to_owned(),
+                source: "sagashop-capture".to_owned(),
+            },
+        ),
+    ]),
+    citations: vec![ProposedCitation {
+        artifact: "order-agent-system-prompt".to_owned(),
+        anchor: "An order may only be shipped after its payment has been \
+                 successfully charged."
+            .to_owned(),
+    }],
+    rationale: "The system prompt forbids shipping before a successful charge."
+        .to_owned(),
+};
+
+let source = ScriptedProposals::new(
+    ProposalSourceIdentity::new(ProposalSourceKind::Scripted, "example"),
+    vec![proposal],
+);
+
+let report = generate(
+    &source,
+    &[prompt],
+    &corpus,
+    &contract,
+    &CandidateNaming::new("sagashop.generated", "v1")?,
+    ProposalBudget::of(NonZeroUsize::new(8).expect("non-zero")),
+)?;
+
+for candidate in report.admitted() {
+    println!("{:?}", candidate.replay().would_fire());
+    if candidate.promotion_blockers().is_empty() {
+        // The evidence supports asking a reviewer.
+    }
+}
+```
+
+Each admitted candidate is named deterministically: the naming prefix, the pattern
+identifier, and a zero-padded ordinal, under the version you declared. The identity a
+candidate would be promoted under is derived, never authored by the proposal source.
+
+Inspect the report's rejections alongside its admissions. Every rejection states which
+proposal failed and why, with the exact strings the proposal used.
