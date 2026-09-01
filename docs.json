@@ -38,6 +38,7 @@
             "pages": [
               "sentinel/reference/patterns",
               "sentinel/reference/candidates",
+              "sentinel/reference/decisions",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]
