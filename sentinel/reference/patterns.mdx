@@ -99,10 +99,11 @@ silently passing. Evidence that is too weak to convict is never reported as succ
 
 ### Current status
 
-`provenance.taint` is declared, lowered, and decidable: instantiation, filter compilation,
-and the decision table all ship. End-to-end verdict evaluation is not yet wired for this
-pattern, so no verdicts are produced for it today. Instantiations validate and compile now
-and become live monitors when the evaluator generalizes beyond precedence.
+`provenance.taint` evaluates end to end. An instantiation lowers to a live monitor, and the
+evaluator settles a verdict per binding under the decision table above, exactly as it does
+for `precedence.approval`. Candidate replay evaluates taint candidates over the corpus and
+reports a would-fire rate for them. Enforcement decisions remain detect-only for this
+pattern: a taint specification produces verdicts but does not gate pending actions.
 
 ## Instantiating a pattern
 
