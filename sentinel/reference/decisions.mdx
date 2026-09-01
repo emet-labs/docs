@@ -128,8 +128,11 @@ aggregate accepted fail mode.
 
 ## Calling `decide`
 
-`decide` is pure and stateless: it reads the request, the pending action, the active filter,
-and the monitor state the core already holds. It writes nothing and reads no clock.
+`decide` is pure and stateless: it reads the request, the active filter, and the monitor
+state the core already holds. It writes nothing and reads no clock. The asked action is
+carried by the request itself: `decide` reads the kind, identity, attributes, and declared
+predecessors from the request's producer event, so you do not adapt or pass the pending
+action separately.
 
 ```rust
 use std::collections::{BTreeMap, BTreeSet};
@@ -144,8 +147,7 @@ let accepted = BTreeSet::from([AvailabilityContract::accept(
 )]);
 
 let outcome = decide(
-    &request,                      // the probe's DecideRequest
-    &pending_action,               // the held action, adapted to an Event
+    &request,                      // the probe's DecideRequest, carrying the asked action
     transport_budget_nanoseconds,  // remaining budget measured at this hop
     &filter,                       // the active event filter
     &evaluators,                   // monitor state, keyed by specification identity
