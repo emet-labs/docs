@@ -1,0 +1,161 @@
+---
+title: "Shadow rollout"
+description: "How Sentinel publishes a specification in shadow behind an activation barrier and promotes it to active once every required source acknowledges the epoch."
+---
+
+Publishing a specification does not make it authoritative. Every newly published
+specification starts in a warming shadow state behind an **activation barrier**: it cannot
+produce authoritative verdicts, and it cannot reach a notification channel, until every
+required source acknowledges the new filter epoch and catches up to its activation
+watermark. This page documents the rollout lifecycle, the barrier that gates it, and the
+functions that drive it.
+
+<Note>
+The rollout seam ships as a library today: `publish`, `advance_readiness`,
+`evaluate_published`, and `may_notify` in `sentinel_api`, with the barrier itself in
+`sentinel_model`. No RPC endpoint serves publication yet. This page documents the semantics
+so you can drive a rollout programmatically and reason about when a specification becomes
+authoritative.
+</Note>
+
+## The rollout lifecycle
+
+Rollout is expressed as two existing fields on each published filter entry, not a new state
+machine:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| Readiness | `Warming`, `Active` | Whether the activation barrier has cleared |
+| Evaluation mode | `Shadow`, `Detect`, `Enforce` | How verdicts and decisions are acted on |
+
+Publication always writes `Warming` × `Shadow`. A warming specification must remain in
+shadow; a filter that pairs `Warming` with any other mode is refused at validation with
+`InvalidReadinessMode`. Once the barrier clears, readiness flips to `Active`, and only an
+active specification may run in detect or enforce mode.
+
+Two invariants hold across the lifecycle:
+
+- **Shadow never notifies.** `may_notify` returns `false` for any shadow or warming entry,
+  so a specification published in shadow cannot reach a notification channel.
+- **Active never regresses.** Once a specification is active, it is never flipped back to
+  warming.
+
+## Filter epochs
+
+Each publication allocates a new filter epoch: the current epoch plus one, or `1` when
+nothing has been published yet. The epoch is what probes acknowledge back to Sentinel, and
+it is the target the activation barrier waits on.
+
+The one write that does not allocate a new epoch is the readiness flip itself: promoting a
+specification from `Warming` to `Active` overwrites the same epoch in place.
+
+## The activation barrier
+
+An `ActivationBarrier` is the precondition of authority as data: the target filter epoch
+plus one activation watermark per required source. Each watermark carries the source's
+sequence coordinate at publication and `observed_at`, the publication instant.
+
+The barrier clears for a source only when both conditions hold:
+
+1. The source has acknowledged the published filter epoch.
+2. The source's evidence has reached its activation watermark.
+
+`ActivationBarrier::clear` answers for the whole barrier: it returns a `BarrierCleared`
+proof when every required source has admitted, or a `BarrierPending` naming each source that
+has not and why. The proof cannot be manufactured; `clear` is its only constructor.
+
+Two timing rules keep the barrier honest:
+
+- `observed_at` is the publication instant. A completeness signal observed before that
+  instant does not admit, so stale pre-publication evidence cannot clear the barrier.
+- A restarted source may write a lower acknowledged filter epoch. The write is allowed, but
+  the clearance read ignores it: acknowledgement is judged against the publication epoch,
+  never un-acknowledged by a later, lower write.
+
+## Publishing a filter
+
+`publish` compiles your filter sources, stamps the activation barrier from each required
+source's latest completeness evidence, and persists the filter at the next epoch:
+
+```rust
+use sentinel_api::publish;
+
+let filter = publish(
+    &sources,     // your filter sources
+    observed_at,  // the publication instant, used as the barrier's freshness boundary
+    &store,       // the store that persists published filters
+)
+.await?;
+```
+
+Every specification in the published filter comes out `Warming` × `Shadow` with its barrier
+attached. Publication refuses rather than degrades:
+
+| Error | Cause |
+| --- | --- |
+| `MissingCompleteness` | A required source has no completeness evidence, so no barrier watermark can be named for it. |
+| `NoActivationBarrier` | The assembled filter carries no activation barrier for a specification. |
+| `Barrier` | The barrier was refused for any other reason. |
+| `Compile`, `Filter`, `Store` | The compiler, model validation, or the store refused. |
+
+## Advancing readiness
+
+`advance_readiness` attempts the `Warming` → `Active` flip from acknowledgement evidence the
+store already holds:
+
+```rust
+use sentinel_api::advance_readiness;
+
+if let Some(filter) = advance_readiness(&store).await? {
+    // At least one specification was examined; entries whose barriers
+    // cleared are now Active at the same epoch.
+}
+```
+
+It reads the published watermarks' own source and epoch pairs, so a source that restarted
+onto a lower epoch cannot un-acknowledge, and rewrites readiness in place at the same epoch.
+Call it whenever new source evidence lands, or on a schedule; it is idempotent and never
+demotes an active specification.
+
+## Shadow verdicts
+
+A warming specification still evaluates. `evaluate_published` runs CAT-1 evaluation against
+a published filter with the barrier attached, and records every verdict:
+
+```rust
+use sentinel_api::evaluate_published;
+
+let verdicts = evaluate_published(
+    &ir,        // the specification's compiled IR
+    &filter,    // the published event filter
+    &events,    // the events to evaluate
+    &sources,   // source evidence, keyed by source identity
+    &store,     // the store that records verdicts
+)
+.await?;
+```
+
+Recorded verdicts stay non-authoritative until the barrier clears. This is what makes shadow
+warming useful: you see exactly what the specification would have concluded, on real
+traffic, before any of its conclusions carry authority. Shadow evaluation does not change
+notification; `may_notify` still refuses shadow.
+
+## Checking whether a specification may notify
+
+`notification_allowed` answers for one specification on a published filter:
+
+```rust
+use sentinel_api::notification_allowed;
+
+let allowed = notification_allowed(&filter, "sagashop.p4.ship-requires-prior-charge", "v1");
+```
+
+Missing entries and unreadable lifecycle fields are not notifiable. Only an active,
+non-shadow specification can produce a notification payload.
+
+## How rollout interacts with enforcement
+
+Shadow and warming entries are never matched by [enforcement
+decisions](/sentinel/reference/decisions), and a pending activation barrier on a matched
+active entry settles as `Defer(EVIDENCE_GAP)`. Rollout therefore composes with enforcement's
+core property: missing evidence is never a pass and never a block.
