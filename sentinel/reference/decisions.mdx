@@ -1,0 +1,164 @@
+---
+title: "Enforcement decisions"
+description: "How Sentinel decides whether a pending action may proceed: permit, defer, and deny semantics, fail modes, latency budgets, and the aggregate rule."
+---
+
+When a specification is deployed under enforcement, a probe holds the action and asks
+Sentinel before letting it execute. The `decide` function answers that question: one
+decision per matched active-enforcement specification, plus a single aggregate action the
+probe acts on. Each decision is `Permit`, `Deny`, or `Defer` with a stated reason.
+
+<Note>
+The decision seam ships as a library today: `decide` in `sentinel_core::decision`, assembling
+to the wire `DecideResponse`. No RPC endpoint serves it yet, so nothing answers probes over
+the network. This page documents the semantics so you can evaluate decisions programmatically
+and reason about what enforcement will do once the service lands.
+</Note>
+
+## What gets decided
+
+A specification participates in a decision only when its filter entry matches the pending
+action's event kind under ask-and-block delivery, is evaluated under enforcement, and is
+active. Shadow and warming entries are never matched and never decided. When nothing matches,
+the answer is `Permit` with no per-specification records, mirroring the probe's ship-async
+no-op.
+
+The decision is a per-action causal guard, not a read of the specification's verdict. A
+verdict folds every trigger in a binding, so one past violation would deny every later,
+correctly approved action. Instead, `decide` runs the requirement test for *this* pending
+action over the causally visible frontier, under the same evidence rules the monitor uses.
+
+## The three decisions
+
+| Decision | Meaning | What the probe does |
+| --- | --- | --- |
+| `Permit` | The action may proceed. | Releases the action. |
+| `Deny` | The action may not proceed. | Blocks the action. |
+| `Defer` | Sentinel cannot answer within the evidence and budget it has. | Applies the specification's declared fail mode. |
+
+A defer always carries a reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `TIMEOUT` | The effective latency budget was exhausted at this hop. |
+| `EVIDENCE_GAP` | Evidence the decision demands is missing: no binding yet, a pending activation barrier, outstanding queries, an incomplete declared past, or a closed evidence gate. |
+| `PREFIX_UNCERTAINTY` | Required-source watermarks have not caught up with the emitted epoch, so absence cannot be certified. |
+| `OBSERVATIONAL_UNCERTAINTY` | A requirement event exists but cannot be ordered before the action, so it defers rather than blocks. |
+
+## How a decision settles
+
+Per matched specification, Sentinel applies an ordered table. First match wins:
+
+| Condition | Decision |
+| --- | --- |
+| The effective latency budget is zero | `Defer(TIMEOUT)` |
+| The trigger selector does not match the action | `Permit` |
+| The action binds no binding, the activation barrier is pending, or queries are outstanding | `Defer(EVIDENCE_GAP)` |
+| A delivered, anchor-tier requirement witness lies in the action's declared causal past | `Permit` |
+| The action's declared past is incomplete | `Defer(EVIDENCE_GAP)` |
+| A matching requirement is delivered but not ordered before the action | `Defer(OBSERVATIONAL_UNCERTAINTY)` |
+| The evidence gate is closed | `Defer(EVIDENCE_GAP)` |
+| The gate is open but watermarks do not cover the epochs | `Defer(PREFIX_UNCERTAINTY)` |
+| Absence is certifiable at anchor tier | `Deny` |
+| Otherwise | `Defer(EVIDENCE_GAP)` |
+
+Two properties hold throughout. Missing evidence is never a pass, and missing evidence is
+never a block either; both directions defer, and the declared fail mode decides what happens
+next. A deny is an absence certification and demands everything an authoritative violation
+demands: an open evidence gate, watermark coverage, and anchor-tier witnesses.
+
+A permit is stricter than the monitor's discharge in one deliberate way: it demands an
+anchor-tier requirement witness. An approval the monitored application could forge is a
+self-approval. A contributing-tier-only witness therefore defers instead of permitting.
+
+## Fail modes and the availability contract
+
+Every active-enforcement filter entry declares a fail mode, which `decide` echoes verbatim on
+each record. The probe applies it whenever the decision is `Defer`:
+
+- **Fail open**: the action proceeds. This is the compile default.
+- **Fail closed**: the action is blocked until evidence arrives.
+
+Fail closed trades availability for safety, so Sentinel refuses to serve it silently. A
+fail-closed specification must be covered by an accepted `AvailabilityContract`, the record
+of a named operator accepting that cost for a specific specification version:
+
+```rust
+use sentinel_model::AvailabilityContract;
+
+let contract = AvailabilityContract::accept(
+    "sagashop.p4.ship-requires-prior-charge", // specification id
+    "v1",                                     // specification version
+    "ops",                                    // accepting operator
+);
+```
+
+A fail-closed entry with no accepted contract is a promotion-time misconfiguration, and
+`decide` refuses the whole request with `FailClosedWithoutContract` rather than downgrade the
+record.
+
+## Latency budgets
+
+The effective budget for a decision is the minimum of two values: the remaining transport
+budget the caller measured at this hop, and the specification's declared enforcement latency
+budget. An exhausted budget settles as `Defer(TIMEOUT)`, and the fail mode takes over. The
+budget a decision was computed under rides its record, so you can audit which limit bound it.
+
+## The aggregate rule
+
+One request can match several specifications. The aggregate action the probe acts on is the
+strictest record: deny wins over defer, defer wins over permit. A deferring aggregate carries
+the first deferring record's reason in specification-identity order, which keeps the wire
+response deterministic.
+
+## Refusals
+
+`decide` refuses to answer, loudly, instead of serving a wrong or unverifiable record. A
+refusal surfaces as an error, never a synthesized defer, and the probe answers it with its
+aggregate accepted fail mode.
+
+| Error | Cause |
+| --- | --- |
+| `AlreadyDelivered` | The asked action is already in the trace; the decision is moot. |
+| `FilterEpochMismatch` | The request acknowledges a different filter epoch than the filter it was handed. |
+| `MissingEvaluator` | A matched specification has no monitor state; a wiring bug. |
+| `EvaluatorIdentityMismatch` | The evaluator map's key names a different specification than the state it holds. |
+| `CausalContradiction` | The monitor state's delivered causal edges admit no partial order; a producer or wiring defect. |
+| `FailClosedWithoutContract` | A fail-closed specification has no accepted availability contract. |
+
+## Calling `decide`
+
+`decide` is pure and stateless: it reads the request, the pending action, the active filter,
+and the monitor state the core already holds. It writes nothing and reads no clock.
+
+```rust
+use std::collections::{BTreeMap, BTreeSet};
+
+use sentinel_core::decision::{decide, Decision};
+use sentinel_model::AvailabilityContract;
+
+let accepted = BTreeSet::from([AvailabilityContract::accept(
+    "sagashop.p4.ship-requires-prior-charge",
+    "v1",
+    "ops",
+)]);
+
+let outcome = decide(
+    &request,                      // the probe's DecideRequest
+    &pending_action,               // the held action, adapted to an Event
+    transport_budget_nanoseconds,  // remaining budget measured at this hop
+    &filter,                       // the active event filter
+    &evaluators,                   // monitor state, keyed by specification identity
+    &accepted,                     // accepted availability contracts
+)?;
+
+match outcome.aggregate() {
+    Decision::Permit => release(),
+    Decision::Deny => block(),
+    Decision::Defer(reason) => apply_fail_mode(reason),
+}
+```
+
+`outcome.records()` holds one record per matched specification, sorted by identity, each
+carrying the decision, the declared fail mode, and the effective budget. `outcome.to_wire()`
+assembles the deterministic wire `DecideResponse`.
