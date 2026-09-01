@@ -34,6 +34,12 @@
             ]
           },
           {
+            "group": "Interface",
+            "pages": [
+              "sentinel/dashboard"
+            ]
+          },
+          {
             "group": "Reference",
             "pages": [
               "sentinel/reference/patterns",
