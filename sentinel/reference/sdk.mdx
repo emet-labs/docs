@@ -1,6 +1,190 @@
 ---
 title: "SDK reference"
-description: "Instrument your application with a Sentinel SDK."
+description: "The six Probe SDKs for Sentinel: where to get them, how to install each language, and how to instrument your service as a Probe."
 ---
 
-Coming soon.
+A Probe is the in-process component that instruments your service for Sentinel. It reports
+what your service actually did as events, and asks Sentinel whether to proceed before an
+action becomes irreversible. The Probe SDKs are how your code joins that contract.
+
+Six SDKs are available, each published as its own public repository under the
+[emet-labs](https://github.com/emet-labs) GitHub organization. All six are licensed under
+MPL-2.0 and ship with committed generated protobuf types, so a bare clone builds without
+a code generator.
+
+## Available SDKs
+
+| Language | Repository | Requirements |
+| --- | --- | --- |
+| Go | [sentinel-probe-go](https://github.com/emet-labs/sentinel-probe-go) | Go 1.25 or later |
+| TypeScript | [sentinel-probe-ts](https://github.com/emet-labs/sentinel-probe-ts) | Node.js 24 or later |
+| Python | [sentinel-probe-python](https://github.com/emet-labs/sentinel-probe-python) | Python 3.9 or later |
+| JVM | [sentinel-probe-jvm](https://github.com/emet-labs/sentinel-probe-jvm) | JDK 21 or later |
+| .NET | [sentinel-probe-dotnet](https://github.com/emet-labs/sentinel-probe-dotnet) | .NET 10 SDK |
+| Elixir | [sentinel-probe-elixir](https://github.com/emet-labs/sentinel-probe-elixir) | Elixir 1.16+ on Erlang/OTP 28 |
+
+Every SDK also requires a running Sentinel deployment to connect to. See
+[Installation](/sentinel/installation).
+
+## Install
+
+Only the Go SDK is installable from a package index today. The other five install from
+their repositories until they reach their registries.
+
+<CodeGroup>
+
+```sh Go
+go get github.com/emet-labs/sentinel-probe-go
+```
+
+```sh Python
+# Not yet on PyPI. Install from a clone of sentinel-probe-python:
+python3 -m venv .venv
+.venv/bin/python -m pip install --editable .
+```
+
+```elixir Elixir
+# Not yet on Hex. Use a Git dependency:
+def deps do
+  [
+    {:sentinel_probe_sdk,
+     git: "https://github.com/emet-labs/sentinel-probe-elixir.git"}
+  ]
+end
+```
+
+```sh TypeScript
+# Not yet on npm. Build from a clone of sentinel-probe-ts and
+# consume the built package from your project.
+```
+
+```sh JVM
+# Not yet on Maven Central. Build from a clone of sentinel-probe-jvm
+# (the Gradle wrapper is committed):
+./gradlew build
+```
+
+```sh .NET
+# Not yet on NuGet. Build from a clone of sentinel-probe-dotnet:
+dotnet restore --locked-mode Sentinel.Probe.Sdk.sln
+dotnet build --no-restore Sentinel.Probe.Sdk.sln
+```
+
+</CodeGroup>
+
+## What every SDK provides
+
+The six SDKs expose the same duties with language-appropriate APIs:
+
+| Duty | What it does |
+| --- | --- |
+| Client | Holds the versioned event filter for your source and builds decision requests against Sentinel's decision endpoint. |
+| Filter | Relevance projection before shipping: drops attributes no specification needs. Never samples. |
+| Emission | Converts the OpenTelemetry spans your service already emits into Sentinel events. |
+| Enforcement | The blocking decision gate: permit, deny, or defer, with per-specification fail modes and a monotonic latency budget. |
+| Config | Resolves your source's tier from deployment config, never hard-coded. |
+
+The SDKs are library code. Your application keeps ownership of the OpenTelemetry
+`TracerProvider` and exporter, so span export stays yours.
+
+## Quickstart
+
+The shape is the same in every language: connect a client to Sentinel's decision
+endpoint, wrap your tracer so spans become events, and gate the irreversible action on
+the enforcement outcome. In Go:
+
+```go
+package main
+
+import (
+	"context"
+	"time"
+
+	"github.com/emet-labs/sentinel-probe-go/client"
+	"github.com/emet-labs/sentinel-probe-go/emission"
+	"github.com/emet-labs/sentinel-probe-go/enforcement"
+	"github.com/emet-labs/sentinel-probe-go/ids"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func main() {
+	// Connect to Sentinel's decision endpoint and identify this Probe.
+	decider := client.NewSentinelClient(client.TransportOptions{
+		BaseURL: "http://sentinel.local:7070",
+	})
+	probe := client.New(client.Config{SourceHandle: "checkout-service"}, decider)
+
+	// The tracer your service emits evidence with. Attach your OTLP span
+	// processor to tracer.Provider — export stays yours.
+	tracer := emission.NewProbeTracer(emission.Options{
+		TracerName:  "checkout-service",
+		ServiceName: "checkout-service",
+	})
+
+	ctx := context.Background()
+	_, span := tracer.Tracer.Start(ctx, "charge.card")
+	// ... the work the specification watches ...
+	span.End()
+}
+
+// OnEnd is the span-processor callback. SpanToEvent consumes this
+// ReadOnlySpan — not the API Span that Start returned.
+func OnEnd(ctx context.Context, s sdktrace.ReadOnlySpan, probe *client.ProbeClient) {
+	event := emission.SpanToEvent(emission.SpanConversion{
+		Span:              s,
+		SchemaVersion:     "1.0.0",
+		AcknowledgedEpoch: probe.AcknowledgedEpoch(),
+	})
+
+	// Ask before the action becomes irreversible.
+	outcome := enforcement.Gate(ctx, event, probe.CurrentFilter(), nil,
+		enforcement.Deps{
+			Decide:              probe.DecideFunc(),
+			NowMonotonicNs:      func() int64 { return time.Now().UnixNano() },
+			AcceptedFailModeFor: acceptedFailMode, // what your deployment contracted to
+		},
+		enforcement.Options{
+			SourceHandle:   probe.SourceHandle(),
+			RequestID:      ids.GenerateRequestID(),
+			IdempotencyKey: ids.GenerateIdempotencyKey(),
+		},
+	)
+
+	switch outcome.Kind {
+	case enforcement.OutcomePermit, enforcement.OutcomeFailOpenPermit, enforcement.OutcomeNoFilter:
+		// No filter held means the conservative default: proceed, fail-open.
+		commitTheAction()
+	default: // Deny, Defer, FailClosedDeny: block, or retry within the budget.
+		rollback()
+	}
+}
+```
+
+When Sentinel publishes a new event filter epoch for your source, swap it in:
+
+```go
+probe.SetFilter(newFilter) // a no-op when the epoch is unchanged
+```
+
+Each repository's README carries the equivalent quickstart for its language.
+
+## Contributing and issues
+
+Each SDK repository is a one-way published mirror of an internal source of truth. That
+changes where your changes land, not whether they are welcome:
+
+- File bug reports and feature requests as issues on the SDK repository. They are triaged
+  and fixed in the source repository, and the fix arrives in the mirror on the next
+  publish.
+- Pull requests are reviewed on the mirror. An accepted change is re-landed in the source
+  repository and flows back through the next publish. Sign off every commit
+  (`Signed-off-by: Your Name <you@example.com>`, DCO) so the re-landing is unambiguous.
+- Do not target a mirror's history directly. The publish pipeline force-updates each
+  mirror, so commits that only exist on a mirror branch are overwritten.
+
+Each repository's `CONTRIBUTING.md` documents the pinned development environment.
+
+## Status
+
+The SDKs are early, pre-1.0. The wire protocol is versioned per release, but each
+language's API surface may still change.
