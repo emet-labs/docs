@@ -39,6 +39,7 @@
               "sentinel/reference/patterns",
               "sentinel/reference/candidates",
               "sentinel/reference/decisions",
+              "sentinel/reference/retirement",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]

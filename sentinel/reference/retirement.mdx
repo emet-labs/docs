@@ -1,0 +1,137 @@
+---
+title: "Scope retirement"
+description: "How Sentinel retires a scope that never closes: retirement policies, the retirement signal, what stays in scope, and why a retired verdict is always inconclusive."
+---
+
+Some scopes have no reliable close. A workflow abandons a binding halfway, a producer dies,
+or the closing event simply never arrives, and without intervention the evaluator waits
+forever. Retirement is the escape hatch: the periphery decides that a scope's time is up and
+tells the evaluator so, and the evaluator settles the binding with a verdict whose outcome is
+pinned to `Inconclusive(prefix)`.
+
+The pin is deliberate in both directions. Never `Violate`, because a deadline bounds patience,
+not existence: running out of time is not proof that the required event does not exist. Never
+`Satisfy`, because success is licensed only when a scope closes, and a retired scope did not
+close, it expired.
+
+<Note>
+Retirement ships as evaluator semantics in `sentinel_core` today. Both catalogued patterns
+are event-local, so their scopes always close and neither can declare a retirement policy.
+The mechanism applies once patterns with open-ended scopes land in the catalogue, and it is
+already reachable for hand-built specifications.
+</Note>
+
+## Retirement policies
+
+A specification declares exactly one retirement policy, and the policy admits exactly one
+retirement cause:
+
+| Policy | Admitted cause | Meaning |
+| --- | --- | --- |
+| `NotRequired` | none | The scope cannot fail to close. Every retirement signal is refused. This is the default. |
+| `Deadline` | `Deadline` | The scope retires when the periphery's declared deadline passes. |
+| `Inactivity` | `Inactivity` | The scope retires after the periphery's declared quiet window elapses with no further event. |
+
+The policy names *which* signal is admissible, not *when* it fires. Sentinel's core reads no
+clock, so it never measures a deadline or a quiet window itself. The periphery does the
+timing and hands over the result.
+
+Neither variant carries a duration. The deadline or window length is a periphery parameter;
+the specification only declares that this kind of retirement is legitimate for its scope.
+
+## The retirement signal
+
+A retirement arrives as the evaluator's third kind of input, beside an event and a source's
+evidence. The signal carries three things:
+
+| Field | Meaning |
+| --- | --- |
+| `binding` | The binding whose scope retired. |
+| `horizon` | The observation-time boundary the scope retired at. The periphery computes it; the evaluator only compares against it. |
+| `cause` | Why the periphery stopped waiting: `Deadline` or `Inactivity`. Must match the declared policy. |
+
+The horizon is a decision, not a measurement. For an inactivity policy the periphery
+typically computes it as the binding's latest observation plus the quiet window. The
+evaluator publishes the read half of that arithmetic: `slice_horizon(binding)` returns the
+latest observation time across the binding's admitted events, `Empty` when there is none, or
+`IncomparableClocks` when the observations span more than one Sentinel clock and no latest
+exists.
+
+```rust
+use sentinel_core::evaluator::{Input, SliceHorizon};
+use sentinel_core::slice::{RetirementCause, RetirementSignal, ScopeHorizon};
+use sentinel_model::ObservationTime;
+
+// The periphery decides the scope has gone quiet: latest observation
+// plus the declared window, computed outside the core.
+let SliceHorizon::Observed(latest) = evaluator.slice_horizon(&binding) else {
+    return; // nothing observed, or observations the core cannot order
+};
+let horizon = ScopeHorizon::new(ObservationTime::new(
+    latest.sentinel_clock().clone(),
+    latest.sentinel_nanoseconds() + quiet_window_nanoseconds,
+));
+
+// A binding that already emitted cannot be retired; check before signalling.
+if !evaluator.is_emitted(&binding) {
+    let signal = RetirementSignal::new(binding, horizon, RetirementCause::Inactivity);
+    let step = evaluator.step(Input::retire(signal))?;
+}
+```
+
+## What stays in scope
+
+Admissibility is decided by observation time, never by arrival position. The evaluator
+compares the horizon against each event's own observation time, so an event observed at or
+below the horizon counts even when it is delivered *after* the signal. The verdict stays a
+function of the input set, not of the order it arrived in.
+
+Events the horizon excludes do not vanish silently. The retired verdict discloses two counts:
+events observed above the horizon, and events observed on a different Sentinel clock, which
+the horizon cannot order at all. The verdict also keeps its evidence: discharged obligations
+and unmet requirements are reported as usual, so a retired verdict names its conclusion and
+the evidence behind it.
+
+Retiring a binding the evaluator has never seen an event for is admissible and produces no
+verdict. Refusing it would make the outcome depend on whether the signal or the binding's
+first event arrived first.
+
+## When a signal is refused
+
+A refused signal is an error, never a silent downgrade, and every check runs before any state
+changes. A refused signal leaves the evaluator fully usable: `resume()` and `seal()` still
+work.
+
+| Refusal | Cause |
+| --- | --- |
+| `NotDeclared` | The specification declares no retirement policy. |
+| `CauseNotDeclared` | The signal's cause is not the one the specification declares. |
+| `BindingAlreadyEmitted` | The binding has already emitted a verdict, so retiring it would retract one. Check `is_emitted` first. |
+| `HorizonRegressed` | The incoming horizon is earlier than the horizon already recorded. |
+| `IncomparableHorizon` | The incoming horizon is on a different Sentinel clock than the one recorded. |
+
+Repeated signals are handled by a join, not a refusal. A signal restating the recorded
+horizon and cause is an idempotent no-op, and a later horizon on the same clock advances the
+recorded one. Only a regression or a clock change is refused.
+
+## How a retired binding emits
+
+A retired binding does not wait for the evidence gate. It emits as soon as its evidence
+coverage is non-empty, even while the gate is closed, and the outcome is always
+`Inconclusive(prefix)`. The verdict's envelope carries a free-text disclosure naming the
+cause and horizon, for example `O-03 scope retired: inactivity at sentinel-replay:1200`.
+
+Retirement pins the outcome, not the authority. A retired binding still emits at most twice:
+a preliminary verdict, then one authoritative re-emission once its activation barrier clears.
+The outcome is identical in both.
+
+## Sealing is not retirement
+
+`seal()` is the driver's statement that no further input will arrive, and it emits every
+binding. A scope that never closed does get a prefix-`Inconclusive` verdict at seal, without
+anything having been retired.
+
+The difference is the pin. Sealing lets a binding whose evidence gate is open settle whatever
+its evidence settles, up to a watermark-anchored `Violate`. Retiring a binding fixes the
+outcome to `Inconclusive` whatever the gate says. Use `seal()` to end an evaluation; send a
+retirement signal to give up on one binding mid-stream while the evaluation continues.
