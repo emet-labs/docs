@@ -16,9 +16,7 @@ The catalogue currently holds two patterns, one from each flagship property fami
 | `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
 
 Both patterns evaluate on the hot path with an event-local scope: each obligation is raised
-and settled at a single trigger event, over that event's causal past. An event-local scope
-always closes, so neither pattern declares a
-[retirement policy](/sentinel/reference/retirement).
+and settled at a single trigger event, over that event's causal past.
 
 ## precedence.approval
 
