@@ -1,6 +1,6 @@
 ---
 title: "Candidate generation"
-description: "How Sentinel turns intent artifacts into catalogue-constrained candidate specifications with provenance, replay evidence, and promotion blockers."
+description: "How Sentinel generates candidate specifications from intent artifacts, validates them adversarially, and persists them for review."
 ---
 
 A candidate is a proposed pattern instantiation that is not yet a specification. Sentinel
@@ -13,10 +13,10 @@ Generation never promotes anything. A candidate becomes a specification only thr
 reviewed promotion, which is a separate, later decision.
 
 <Note>
-Candidate generation ships as a library today. Nothing persists, serves, or renders
-candidates yet, and promotion and warming shadow deployment are not yet available. This page
-documents the generation pipeline and the evidence model so you can evaluate candidates
-programmatically.
+Candidate generation and persistence ship as libraries today. Nothing serves or renders
+candidates yet, and reviewed promotion is not yet available. This page documents the
+generation pipeline, the evidence model, and the candidate store so you can evaluate and
+persist candidates programmatically.
 </Note>
 
 ## How generation works
@@ -35,7 +35,9 @@ clock and opens no file:
    actually carries.
 5. Replay evaluates the admitted instantiation over every trace in the corpus and folds the
    verdicts into a would-fire rate.
-6. Promotion blockers and advisories are computed once, at construction.
+6. Adversarial validation derives injected violations from the corpus and checks that the
+   candidate catches them.
+7. Promotion blockers and advisories are computed once, at construction.
 
 A malformed proposal becomes a rejection in the generation report, never an error. One bad
 proposal cannot suppress the good ones beside it. Generation returns an error only when the
@@ -129,6 +131,47 @@ Missing evidence is never a pass. A candidate that would fire on nothing, or who
 names something no producer emits, is a defect to surface, and each of these reasons is a
 promotion blocker.
 
+## Adversarial validation
+
+Adversarial validation now runs automatically during generation. It answers one question:
+if a violation were injected into your corpus, would this candidate catch it?
+
+For every legitimate trace that raised an obligation and matched at least one discharging
+event, Sentinel derives one adversarial trace. The mutation is deliberately trivial: it flips
+one required attribute on the obligation-discharging event so the selector no longer matches.
+The event itself stays present, with the same identity and assurance. Deleting it would be
+the wrong mutation, because the monitor downgrades a missing anchor to `Inconclusive`, which
+would score every correct candidate as having missed.
+
+Derived traces are a sidecar. They are appended after the legitimate census, so they never
+enter the would-fire rate. Traces that never raised an obligation are skipped so they do not
+inflate the injected count.
+
+The outcome is one of four:
+
+| Outcome | Meaning |
+| --- | --- |
+| Not run | Replay was limited, so injecting against an unevaluated candidate would claim a catch that never happened |
+| No adversarial evidence | No adversarial trace could be derived from the corpus |
+| Missed | Violations were injected and none was caught |
+| Caught | Violations were injected and some or all were caught, with exact counts |
+
+The gate clears only when every injected violation is reported as a violation. A partial
+catch is the *adversarial validation incomplete* blocker, with the injected and caught counts
+stated exactly. No injected traces at all is the *adversarial validation not run* blocker.
+
+Two limits are disclosed rather than papered over:
+
+- The flip applies to scalar attribute values only. An array or key-value list attribute
+  cannot be flipped, and Sentinel refuses to guess a mutation for it.
+- `provenance.taint` candidates get no derived traces, because their counterpart evidence
+  falsifies rather than discharges. They stay behind the *adversarial validation not run*
+  blocker and cannot be offered for promotion yet. That is the honest answer, not a gap to
+  close by deleting untrusted-content events.
+
+You can also derive the adversarial traces yourself with `derive_adversarial_traces`, which
+takes a pattern instance and a replay corpus and returns the mutated traces for inspection.
+
 ## Promotion blockers and advisories
 
 Blockers gate; advisories never do. `promotion_blockers()` must be empty for a candidate to
@@ -143,7 +186,7 @@ reach different answers.
 | Replay limited | The replay could not run |
 | Requires new evidence | The candidate depends on event kinds or attribute keys the corpus never carried |
 | Selector near miss | A bound value is within two edits of a value the corpus does carry |
-| Adversarial validation not run | The required adversarial gate has not run yet |
+| Adversarial validation not run | No adversarial trace could be derived, or replay was limited |
 | Adversarial validation incomplete | Injected violations were not all caught |
 
 The near-miss blocker is the tiebreaker between two situations that produce identical replay
@@ -158,8 +201,9 @@ Advisories are recorded and shown to review but do not gate:
 - **Capability shortfall**: a source does not assert a capability its evidence role depends
   on.
 
-Adversarial validation is a required promotion gate but does not execute yet. It ships as a
-standing blocker so it cannot be forgotten, and no candidate can reach promotion without it.
+Adversarial validation is a required promotion gate, and no candidate can reach promotion
+without it. See [Adversarial validation](#adversarial-validation) for how the gate runs and
+what clears it.
 
 ## Generating candidates
 
@@ -261,3 +305,77 @@ candidate would be promoted under is derived, never authored by the proposal sou
 
 Inspect the report's rejections alongside its admissions. Every rejection states which
 proposal failed and why, with the exact strings the proposal used.
+
+## Persisting candidates
+
+The store now persists candidates through the `CandidateStore` trait, implemented by both the
+in-memory store and the Postgres store. Postgres support arrives with migration `0004`, which
+the store applies alongside the earlier migrations.
+
+A persisted `CandidateRecord` carries everything a review surface needs to rebuild the
+candidate:
+
+- The identity the candidate would be promoted under: specification id and version, plus the
+  pattern it instantiates.
+- The instantiation envelope: every bound argument and evidence role.
+- Provenance: origin, proposal source, citations, and rationale.
+- The replay snapshot: census, would-fire counts, adversarial outcome, and per-trace
+  outcomes.
+- The trace vocabulary the corpus carried at generation time.
+- Promotion blockers, advisories, and a review status.
+
+### Review status
+
+Every record carries one of four review statuses, stored as stable column text:
+
+| Status | Column text | Meaning |
+| --- | --- | --- |
+| Proposed | `proposed` | Generated, not yet reviewed |
+| Promoted | `promoted` | A reviewed promotion published this identity as a shadow specification |
+| Warming shadow | `warming-shadow` | The filter is published and the evidence is not yet in the corpus |
+| Rejected | `rejected` | A reviewer rejected the candidate, and no event filter was published |
+
+The lifecycle is enforced by the store, not by convention:
+
+- `put_candidate` inserts or overwrites a `proposed` record, and can write `rejected`. Writing
+  an identical payload is a no-op.
+- A record that has left `proposed` is immutable. A write that would change it is refused as a
+  conflict.
+- `promoted` and `warming-shadow` can be minted only through
+  `publish_filter_and_put_candidate`, which publishes an event filter and writes the record in
+  one transaction. Neither half is visible if the other fails, and the filter must contain the
+  candidate's identity.
+
+Reads are `get_candidate` by specification id and version, and `list_candidates`, which pages
+in lexicographic identity order behind a cursor:
+
+```rust
+use sentinel_store::{CandidateStore, MemoryStore};
+
+let store = MemoryStore::new();
+store.put_candidate(&record).await?;
+
+let loaded = store
+    .get_candidate("sagashop.generated.precedence.approval.0000", "v1")
+    .await?;
+
+let page = store.list_candidates(None).await?;
+for candidate in page.items() {
+    println!("{} {}", candidate.specification_id(), candidate.review_status().as_str());
+}
+```
+
+### Reconstituting a candidate
+
+A stored record is store-local data, not a live candidate. `Candidate::reconstitute` is the
+second mint beside `generate`: it rebuilds a candidate from the persisted envelope, replay
+snapshot, and trace vocabulary.
+
+Reconstitution does not trust the snapshot. It recomputes the evidence need and the promotion
+blockers against the stored vocabulary, and any disagreement with the persisted values is
+refused as a snapshot mismatch. Promotion always reads the recomputed blockers, never a
+stored empty list.
+
+One honesty rule carries through: a reconstituted citation records that the verbatim locate
+check did not re-run. Render it as *citation not re-verified* rather than claiming the anchor
+was checked against the artifact again.
