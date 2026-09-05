@@ -14,9 +14,10 @@ reviewed promotion, which is a separate, later decision.
 
 <Note>
 Candidate generation and persistence ship as libraries today. Nothing serves or renders
-candidates yet, and reviewed promotion is not yet available. This page documents the
-generation pipeline, the evidence model, and the candidate store so you can evaluate and
-persist candidates programmatically.
+candidates yet, and reviewed promotion is not yet available. Published specifications do warm
+in a [shadow rollout](/sentinel/reference/rollout). This page documents the generation
+pipeline, the evidence model, and the candidate store so you can evaluate and persist
+candidates programmatically.
 </Note>
 
 ## How generation works
@@ -190,7 +191,8 @@ reach different answers.
 | Adversarial validation incomplete | Injected violations were not all caught |
 
 The near-miss blocker is the tiebreaker between two situations that produce identical replay
-silence: *no producer emits this yet*, which warming in a shadow deployment resolves, and
+silence: *no producer emits this yet*, which warming in a
+[shadow rollout](/sentinel/reference/rollout) resolves, and
 *this is misspelled*, which warming can never resolve. A near miss reports only values the
 corpus does not carry, with the nearest values it does.
 

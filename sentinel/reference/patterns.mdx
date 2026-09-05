@@ -43,9 +43,37 @@ evaluated an allow for it.
 | `trigger_source` | Contributing | None |
 
 A violation here rests on the *absence* of a requirement event, so the requirement source
-must sit at anchor tier. Without an anchor-tier candidate, Sentinel demotes the violation to
-`Inconclusive(prefix)` instead of settling it. The trigger witnesses itself, so a
-contributing-tier trigger source suffices.
+must sit at anchor tier. When no required source sits at anchor tier, Sentinel demotes the
+violation to `Inconclusive(prefix)` instead of settling it. The trigger witnesses itself, so
+a contributing-tier trigger source suffices.
+
+### How a violation settles
+
+A violation is an absence claim: the trigger occurred and no requirement lies in its causal
+past. Sentinel settles that claim as an authoritative `Violate` on one of two mutually
+exclusive bases, both carried on the verdict's settlement basis:
+
+- **Decisive events**: witness events settle the absence directly. The basis names the
+  witnesses, the invariance-proof rule, and every open limitation.
+- **Watermark-anchored silence**: a required anchor-tier requirement source is healthy,
+  watermark-complete through the binding's window, and emitted nothing for the binding.
+  That silence is affirmative evidence that no requirement event exists, so Sentinel
+  settles the violation on it. The basis names each silent anchor source and the watermark
+  its silence is complete through. No source-tier gap accompanies this verdict.
+
+Silence anchors a violation only when it is provably exhaustive. Weaker silence still
+refuses to settle:
+
+| Condition | Outcome |
+| --- | --- |
+| A required source is missing, unhealthy, or its watermarks have not caught up | `Inconclusive(prefix)` with a source-tier gap |
+| No required source sits at anchor tier | `Inconclusive(prefix)` |
+| The specification needs a presence that silence cannot confirm | `Inconclusive(anchor_silence)` |
+
+`anchor_silence` is a distinct inconclusive reason (wire value `ANCHOR_SILENCE`) for the
+residual case where the anchor source is complete, healthy, and silent, but silence cannot
+prove the presence the specification demands. More events will not settle it, so it is not
+prefix uncertainty, and it is never reported as a violation.
 
 ## provenance.taint
 
