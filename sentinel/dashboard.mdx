@@ -1,0 +1,89 @@
+---
+title: "Dashboard"
+description: "Run the Sentinel dashboard locally, navigate verdicts, traces, and specifications, and use the command palette and keyboard shortcuts."
+---
+
+The Sentinel dashboard is a local web interface for the verdict surface: fleet-wide verdict
+and coverage overviews, verdict triage, trace investigation, the pattern catalogue, and
+candidate review. It is built for keyboard-first use, with a command palette and chorded
+shortcuts throughout.
+
+<Note>
+The dashboard currently renders representative sample data, and every page shows an
+`Interface preview · sample data` marker. It defines the intended workflows but does not yet
+read from or write to a running Sentinel deployment. No control on any page writes anywhere.
+</Note>
+
+## Running the dashboard
+
+From the repository root:
+
+```bash
+just run
+```
+
+The dashboard listens on `127.0.0.1:5173` by default. Set `SENTINEL_DASHBOARD_HOST` or
+`SENTINEL_DASHBOARD_PORT` to bind a different address:
+
+```bash
+SENTINEL_DASHBOARD_HOST=0.0.0.0 SENTINEL_DASHBOARD_PORT=8080 just run
+```
+
+## Pages
+
+| Route | What it shows |
+| --- | --- |
+| `/` | Fleet-wide verdict and evidence coverage overview |
+| `/verdicts`, `/verdicts/:id` | Verdict triage, the full assurance envelope, causal evidence, and amendment history |
+| `/traces`, `/traces/:id` | Trace investigation through causal frontier and event timeline views |
+| `/metrics` | Per-specification outcomes, inconclusive reasons, and coverage gaps linked to blocked verdicts |
+| `/patterns` | Catalogue browsing and the entry point for pattern instantiation |
+| `/specifications`, `/specifications/:id` | Specification detail, shadow evaluation, and filter epoch readiness |
+| `/candidates` | Candidate provenance, replay evidence, and deliberate promotion or rejection |
+| `/fleet` | Per-source health, watermark lag, source tiers, and filter epochs |
+
+Candidate promotion in the dashboard follows the same rule as the
+[generation pipeline](/sentinel/reference/candidates): promotion is a reviewed act. The
+Candidates page surfaces promotion blockers and asks you to confirm before anything is
+promoted. Nothing promotes silently.
+
+## Command palette
+
+Press <kbd>⌘</kbd> <kbd>K</kbd> (or <kbd>Ctrl</kbd> <kbd>K</kbd>) to open the command
+palette from any page. It jumps to any page, searches verdicts, specifications, and
+candidates by name, and switches between light and dark themes.
+
+## Keyboard shortcuts
+
+Press <kbd>?</kbd> anywhere to open the shortcuts reference. Navigation uses chords: press
+<kbd>g</kbd>, then the follow key.
+
+### Navigate
+
+| Chord | Destination |
+| --- | --- |
+| <kbd>g</kbd> <kbd>o</kbd> | Overview |
+| <kbd>g</kbd> <kbd>v</kbd> | Verdicts |
+| <kbd>g</kbd> <kbd>t</kbd> | Traces |
+| <kbd>g</kbd> <kbd>m</kbd> | Metrics |
+| <kbd>g</kbd> <kbd>s</kbd> | Specifications |
+| <kbd>g</kbd> <kbd>c</kbd> | Candidates |
+| <kbd>g</kbd> <kbd>f</kbd> | Fleet |
+| <kbd>g</kbd> <kbd>p</kbd> | Pattern catalogue |
+
+### Lists
+
+| Key | Action |
+| --- | --- |
+| <kbd>j</kbd> | Move down |
+| <kbd>k</kbd> | Move up |
+| <kbd>↵</kbd> | Open the selected row |
+| <kbd>Esc</kbd> | Clear the selection |
+
+### Global
+
+| Key | Action |
+| --- | --- |
+| <kbd>⌘</kbd> <kbd>K</kbd> | Command palette |
+| <kbd>[</kbd> | Collapse the sidebar |
+| <kbd>?</kbd> | Shortcuts reference |
