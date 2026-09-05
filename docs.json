@@ -44,6 +44,7 @@
             "pages": [
               "sentinel/reference/patterns",
               "sentinel/reference/candidates",
+              "sentinel/reference/rollout",
               "sentinel/reference/decisions",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
