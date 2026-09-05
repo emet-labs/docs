@@ -46,6 +46,7 @@
               "sentinel/reference/candidates",
               "sentinel/reference/rollout",
               "sentinel/reference/decisions",
+              "sentinel/reference/cold-path",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]

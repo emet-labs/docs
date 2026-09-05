@@ -1,0 +1,166 @@
+---
+title: "Cold-path guards"
+description: "How Sentinel evaluates relational properties off the hot path: fact queries, guard conclusions, the lookback window, and the causal group invariant operator."
+---
+
+Some properties cannot be settled at a single trigger event over its causal past. A
+relational invariant like "stock counts must strictly decrease along causally ordered
+reservations for the same item" joins events *across* bindings, so it cannot run
+incrementally on the hot path. Sentinel routes these questions to the cold path: a
+specification declares one or more cold-path guards, the core asks each guard a fact query
+per binding, and a resolver answers against stored evidence.
+
+<Note>
+The cold path ships as a library today: the guard catalogue, window planner, and resolver
+live in the `sentinel-coldpath` crate, and the fact protocol lives in
+`sentinel_core::facts`. The catalogue currently holds one operator, the causal group
+invariant. Specifications without declared guards are unaffected: their verdicts are
+byte-identical to before.
+</Note>
+
+## Declaring a guard
+
+A cold-path guard is a `GuardDefinition`: an operator plus a `LookbackBound` that bounds how
+far below the query's watermark floor the guard looks. Definitions are collected into a
+`GuardCatalogue`, which refuses two definitions that derive the same identity.
+
+A specification opts in by declaring the guard's `ColdGuardId` via `with_cold_guards`. The
+id is derived from the operator's parameters and the lookback bound, never supplied by hand.
+Changing either changes the id, which changes the query key and invalidates every answer
+recorded against the old question. A specification that declares no guards keeps its
+existing hot-path behavior.
+
+The lookback bound is part of the question, not an approximation of an unbounded one. The
+guard asks "within the last N sequence positions per source", so a bounded answer is exact
+rather than truncated.
+
+## The fact query lifecycle
+
+For each binding, the core declares one `FactQuery` per declared guard, pinned at the hot
+path's watermark floor. Queries are batched into a `FactRequest`; the resolver answers each
+with a `FactResponse` carrying one of four conclusions:
+
+| Conclusion | Meaning | Settles? |
+| --- | --- | --- |
+| `Holds` | The property holds over the window it was answered against. | Yes |
+| `Fails` | The property fails, naming the witness coordinates. | Yes |
+| `Deferred` | No answer this round; asking again may produce one. | No |
+| `Refused` | No answer will ever exist for this question. | Yes |
+
+A `Deferred` query is re-issued on the next round. The other three conclusions settle the
+query, but only when the response also confirms the query's floor and required-source
+coverage. Once a query settles it never reopens, and it leaves the outstanding set.
+
+### Deferral reasons
+
+| Reason | Meaning |
+| --- | --- |
+| `ProjectionBehindFloor` | The retained projection has not reached the query's watermark floor. |
+| `ProjectionChangedUnderRead` | The projection changed underneath a paginated read. |
+| `ProjectionUnreachable` | The resolver could not reach its projection at all. |
+| `CausalEdgesUnresolved` | Causal edges inside the window name events the window does not resolve. |
+
+### Refusal reasons
+
+| Reason | Meaning |
+| --- | --- |
+| `EvidenceReaped` | Part of the window is past the retention horizon. |
+| `EvidenceNeverRetained` | Part of the window was refused at append and never retained. |
+| `CausalEdgesContradictory` | The window's declared edges admit no partial order. |
+| `GuardUnknown` | No catalogued guard matches the query's id. |
+
+## How a refusal settles the verdict
+
+A terminal `Refused` settles the binding's verdict as authoritative
+`Inconclusive(epistemic)`: the evidence needed to answer the question no longer exists, so
+neither `Satisfy` nor `Violate` can be honestly claimed. Missing evidence is never turned
+into a pass. A reaped or never-retained window is `Refused`, never `Holds`.
+
+A `Fails` conclusion is stored with its witnesses but does not currently flip the verdict:
+a cold `Fails` never overrides a hot `Satisfy`, and composing cold conclusions into
+`Violate` outcomes is future work. Use the cold path today to detect relational failures in
+stored conclusions and to get honest epistemic downgrades when evidence is gone.
+
+## The lookback window
+
+The resolver plans a watermark-relative window from each query. For every source in the
+query's floor, the window spans the last `lookback` sequence positions, and the window's top
+is the floor itself. A resolver answer can therefore never exceed the core's evidence
+ceiling. An empty floor defers: the core has no evidence boundary yet, so there is nothing
+to answer against.
+
+Truncation is detected window-locally. If a member event's causal ancestry escapes the
+planned window, the resolver answers `Deferred(CausalEdgesUnresolved)` rather than
+evaluating over a cut window and answering `Holds`.
+
+## The causal group invariant
+
+The one catalogued operator, `CausalGroupInvariant`, groups window events by a key that is
+*not* the binding attribute, then checks a pairwise predicate along the causal order inside
+each group. Grouping by the binding key is rejected at construction, because per-binding
+properties belong on the hot path.
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `member` | selector | Events the question is about, matched by kind and required attribute equalities. |
+| `group_key` | attribute key | The attribute whose value groups members. Must differ from the binding attribute. |
+| `ordered` | predicate | Checked over every causally ordered pair in a group. `StrictlyDecreasingInteger` requires a named integer attribute to strictly decrease along the edge. |
+| `concurrent` | predicate | Fallback when a group has no causally ordered pair. `DistinctInteger` requires every member to carry a distinct integer. |
+
+The operator itself is pure and total: it answers `Holds` or `Fails`. Unavailability is the
+resolver's judgement, never the operator's.
+
+Use this operator for cross-binding resource invariants. The grounding property is
+SagaShop's P5, inventory monotonic decrement: reservations for the same item, made by
+different orders, must record strictly decreasing stock counts along their causal order.
+Two concurrent reservations for the same item that record the same stock count fail the
+concurrent fallback, which is exactly the double-spend shape.
+
+## Example
+
+Define the P5 guard, build a catalogue, and answer queries with the resolver:
+
+```rust
+use std::collections::BTreeMap;
+use std::num::NonZeroU64;
+
+use sentinel_coldpath::{
+    CausalGroupInvariant, ColdPathResolver, ConcurrentPredicate, GuardCatalogue,
+    GuardDefinition, LookbackBound, MemberSelector, Operator, OrderedPredicate,
+};
+
+let operator = CausalGroupInvariant::new(
+    MemberSelector::new(
+        EventKind::new("sagashop.inventory.reserve.completed")?,
+        BTreeMap::from([(
+            "sagashop.inventory.reserved".to_owned(),
+            AttributeValue::Bool(true),
+        )]),
+    ),
+    "sagashop.inventory.item",
+    "sagashop.order.id",
+    OrderedPredicate::StrictlyDecreasingInteger {
+        attribute: "sagashop.inventory.stock_after".to_owned(),
+    },
+    ConcurrentPredicate::DistinctInteger {
+        attribute: "sagashop.inventory.stock_after".to_owned(),
+    },
+)?;
+
+let definition = GuardDefinition::new(
+    "p5-inventory-monotonic",
+    Operator::CausalGroupInvariant(operator),
+    LookbackBound::new(NonZeroU64::new(64).expect("nonzero")),
+);
+
+// Declare this id on the specification via `with_cold_guards`.
+let guard_id = definition.cold_guard_id();
+
+let catalogue = GuardCatalogue::from_definitions(vec![definition])?;
+let resolver = ColdPathResolver::new(&store, &catalogue);
+let responses = resolver.answer_all(&request).await;
+```
+
+The resolver returns a `FactResponse` for every query, never an error. The core applies
+each response to its ledger, re-issues anything deferred, and settles the verdict once every
+declared guard has answered.
