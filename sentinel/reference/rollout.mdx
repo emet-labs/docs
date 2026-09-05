@@ -117,6 +117,40 @@ onto a lower epoch cannot un-acknowledge, and rewrites readiness in place at the
 Call it whenever new source evidence lands, or on a schedule; it is idempotent and never
 demotes an active specification.
 
+## Liveness bounds
+
+Clearing the barrier once is not a permanent pass. A source that admitted and then went
+silent past a stated liveness bound stops being admitted, by name: its evidence reports
+`StaleCompletenessSignal` rather than silence or pre-barrier absence. Two bounds are stated:
+
+| Source | Maximum silence | Constant |
+| --- | --- | --- |
+| Active | 60 seconds | `ACTIVE_MAX_SILENCE_NANOS` |
+| Intentionally idle | 15 minutes | `IDLE_MAX_SILENCE_NANOS` |
+
+A source that declares itself intentionally idle gets the longer bound, but idle is not a
+free pass; it is a separately stated bound, not an exemption.
+
+The check is two-phase: activation is judged first, and liveness only applies to evidence
+that already admitted. Pre-barrier evidence therefore still reports as pre-barrier, never as
+stale.
+
+`advance_readiness_at` is the liveness-aware sibling of `advance_readiness`. It derives both
+silence floors from an injected `now` and refuses to promote a specification whose source
+has gone silent past its bound:
+
+```rust
+use sentinel_api::advance_readiness_at;
+
+if let Some(filter) = advance_readiness_at(&store, now).await? {
+    // Entries whose barriers cleared under the liveness floors are now Active.
+}
+```
+
+Sentinel reads no clock internally. You pass `now` as an observation time, and the bounds
+are subtracted from it to build the floors. `advance_readiness` without a `now` pins both
+floors to the publication instant, so it agrees exactly with the plain barrier clearance.
+
 ## Shadow verdicts
 
 A warming specification still evaluates. `evaluate_published` runs CAT-1 evaluation against
