@@ -8,15 +8,16 @@ reusable temporal property with a fixed parameter schema: you bind its parameter
 event kinds and attribute keys, bind its evidence roles to your deployed sources, and the
 result compiles to a monitor and an event filter.
 
-The catalogue currently holds two patterns, one from each flagship property family:
+The catalogue currently holds three patterns:
 
 | ID | Pattern | Shape | What it checks |
 | --- | --- | --- | --- |
 | `precedence.approval` | Causal precedence with approval binding | Precedence | An event never occurs unless a qualifying event for the same binding lies in its causal past. |
 | `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
+| `absence.after-until` | Absence between after and until | Absence | A veto event never occurs inside the open interval `(after, until]` for the same binding. |
 
-Both patterns evaluate on the hot path with an event-local scope: each obligation is raised
-and settled at a single trigger event, over that event's causal past.
+All three patterns evaluate on the hot path with an event-local scope: each obligation is
+raised and settled at a single event, over that event's causal past.
 
 ## precedence.approval
 
@@ -104,6 +105,143 @@ evaluator settles a verdict per binding under the decision table above, exactly 
 for `precedence.approval`. Candidate replay evaluates taint candidates over the corpus and
 reports a would-fire rate for them. Enforcement decisions remain detect-only for this
 pattern: a taint specification produces verdicts but does not gate pending actions.
+
+## absence.after-until
+
+Formula: `AG(until -> !EP_(after,until](veto))`.
+
+Use this pattern when a forbidden event must not occur between an opening event and a closing
+action for the same unit of work. Typical uses: no approval revocation between an approval
+and the mutation it authorizes, no payment capture once a carrier has rejected the shipment,
+no threat-score elevation for a principal inside a request window.
+
+The interval is causal, not wall-clock. It opens when an event matching the `after` selector
+lies in the causal past of an event matching `until`, and it closes at that `until` event,
+which is also the event that raises the obligation. The interval is open at `after` and
+closed at `until`: a veto at the `until` event itself falsifies the property, while the
+opening `after` event does not.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The question is whether a veto reached this binding's open interval, not whether a veto occurred anywhere. |
+| `after` | selector | Events that open the interval. |
+| `until` | selector | Events that close the interval and raise the absence obligation. One obligation per matching event per binding. |
+| `veto` | selector | Events prohibited inside `(after, until]`. A match falsifies the property when it lies in that interval. It may match freely outside it, and usually does. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `until_source` | Anchor | Causal edges |
+| `veto_source` | Anchor | Causal edges, completeness signals |
+| `after_source` | Contributing | Completeness signals |
+
+The `until` source is where a `Satisfy` is claimed about an interval that must contain no
+veto, so it demands anchor tier: a source inside the monitored application declaring its own
+interval clean is the suppression failure the tier model exists to catch. A violation rests
+on a veto's presence inside the interval, so the veto source demands anchor tier too, plus
+completeness signals because a `Satisfy` is an absence claim about that source. The opening
+delimiter witnesses itself, so a contributing-tier `after` source suffices. It still needs
+completeness signals: a settled interval that never opened is reported as no obligation, and
+without a watermark on the `after` source that outcome would be silent.
+
+### How verdicts settle
+
+For each `until` event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| A veto event lies inside `(after, until]`, witnessed at anchor tier | `Violate` |
+| A veto event lies inside `(after, until]`, witnessed at contributing tier only | `Inconclusive(prefix)` |
+| An `after` or veto event is concurrent with the `until` event | `Inconclusive(observational)` |
+| No `after` event reaches the `until` event, and evidence coverage is closed | No obligation |
+| No `after` event reaches the `until` event, coverage still open | `Inconclusive(prefix)` |
+| The interval opened, no veto lies inside it, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+As with `provenance.taint`, presence is tested before tier, and the tier test can never reach
+`Satisfy`. A genuine veto witnessed only at contributing tier downgrades to `Inconclusive`
+rather than silently passing.
+
+The no-obligation row is not a pass. An interval that never opened has nothing to discharge,
+so that `until` event contributes nothing to the binding's verdict, and it is never rendered
+as `Satisfy`. A binding whose every `until` event settles as no obligation produces no
+verdict at all.
+
+### Example
+
+This instantiation forbids an approval revocation between an approval and the mutation it
+authorizes:
+
+```rust
+use std::collections::BTreeMap;
+
+use sentinel_compile::catalogue::{
+    instantiate, EvidenceBinding, ParameterValue, PatternId, SelectorValue,
+};
+
+let arguments = BTreeMap::from([
+    (
+        "binding_attribute".to_owned(),
+        ParameterValue::AttributeKey("example.change.id".to_owned()),
+    ),
+    (
+        "after".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.approval.granted")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "until".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.mutation.applied")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "veto".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.approval.revoked")?,
+            BTreeMap::new(),
+        )),
+    ),
+]);
+
+let evidence = BTreeMap::from([
+    (
+        "until_source".to_owned(),
+        EvidenceBinding::new(config_service, SourceTier::Anchor, causal_edges),
+    ),
+    (
+        "veto_source".to_owned(),
+        EvidenceBinding::new(approval_service, SourceTier::Anchor, full_capabilities),
+    ),
+    (
+        "after_source".to_owned(),
+        EvidenceBinding::new(approval_service, SourceTier::Contributing, completeness_only),
+    ),
+]);
+
+let instance = instantiate(
+    PatternId::AbsenceAfterUntil,
+    identity,
+    contract,
+    arguments,
+    evidence,
+)?;
+```
+
+### Current status
+
+`absence.after-until` evaluates end to end on the hot path, with zero cold-path fact
+requests per verdict. Candidate proposals can target the pattern, and candidate replay
+evaluates absence candidates over the corpus the same way it does for the other two
+patterns. Enforcement decisions remain detect-only: an absence specification produces
+verdicts but does not gate pending actions.
 
 ## Instantiating a pattern
 
