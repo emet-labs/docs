@@ -8,16 +8,20 @@ reusable temporal property with a fixed parameter schema: you bind its parameter
 event kinds and attribute keys, bind its evidence roles to your deployed sources, and the
 result compiles to a monitor and an event filter.
 
-The catalogue currently holds three patterns:
+The catalogue currently holds four patterns:
 
 | ID | Pattern | Shape | What it checks |
 | --- | --- | --- | --- |
 | `precedence.approval` | Causal precedence with approval binding | Precedence | An event never occurs unless a qualifying event for the same binding lies in its causal past. |
 | `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
 | `absence.after-until` | Absence between after and until | Absence | A veto event never occurs inside the open interval `(after, until]` for the same binding. |
+| `aggregation.count-within` | Count within sequence lookback | Aggregation | At a trigger event, the count of matching member events inside a sequence lookback for the same binding stays strictly below a threshold. |
 
-All three patterns evaluate on the hot path with an event-local scope: each obligation is
-raised and settled at a single event, over that event's causal past.
+`precedence.approval`, `provenance.taint`, and `absence.after-until` evaluate on the hot
+path with an event-local scope: each obligation is raised and settled at a single trigger
+event, over that event's causal past. `aggregation.count-within` raises its obligation the
+same way, but the count is answered on the [cold path](/sentinel/reference/cold-path), one
+fact query per binding.
 
 ## precedence.approval
 
@@ -271,6 +275,88 @@ evaluates absence candidates over the corpus the same way it does for the other 
 patterns. Enforcement decisions remain detect-only: an absence specification produces
 verdicts but does not gate pending actions.
 
+## aggregation.count-within
+
+Formula: `AG(trigger -> count_within(lookback, member) < threshold)`.
+
+Use this pattern for per-binding rate caps: at each trigger event, the number of member
+events inside a sequence lookback must stay strictly below a threshold. Typical uses: a
+privileged action is allowed only while fewer than *n* similar actions sit in its recent
+causal history, or an assessment event must confirm that retries for the same workflow
+stayed under a cap.
+
+This is the catalogue's first cold-tier pattern. The lookback the count is drawn from is a
+retained window of causal evidence rather than the slice the hot path already holds, so the
+hot path raises one obligation per trigger event, declares one fact query per binding, and
+reads the answer back from a [cold-path guard](/sentinel/reference/cold-path). Each verdict
+costs one fact request.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The cap is per binding, not a global count across principals. |
+| `trigger` | selector | Events that raise the aggregation obligation. One obligation per matching event per binding. |
+| `member` | selector | Events counted inside the lookback. Members may match freely elsewhere; a clean under-threshold deployment emits members without ever violating. |
+| `lookback` | sequence lookback bound | How many sequence positions of causal evidence to include when counting members. |
+| `threshold` | count threshold | Exclusive upper bound on the member count inside the lookback. |
+
+Two rules shape these parameters:
+
+- The lookback counts **sequence positions per source**, not wall-clock time. Duration
+  windows in seconds, minutes, hours, or days are not supported, and a duration-shaped
+  proposal is refused rather than silently reinterpreted.
+- The threshold is **exclusive**: a complete lookback with `count < threshold` holds, and
+  `count >= threshold` fails the guard. An empty complete lookback counts zero members, so a
+  binding that never emitted a member still satisfies.
+
+A lookback of `0` or a threshold of `0` is refused at proposal admission. A zero threshold
+would forbid the trigger outright, and a zero lookback asks about an empty window.
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `trigger_source` | Anchor | Causal edges |
+| `member_source` | Anchor | Causal edges, completeness signals |
+
+The trigger source demands anchor tier for the same reason `provenance.taint`'s action
+source does: a `Satisfy` here is a claim about the trigger's own recent history, and a
+contributing-tier source declaring its own rate cap clean is the suppression failure the
+tier model exists to catch. The member source needs completeness signals because an
+incomplete or reaped lookback must never count as under threshold.
+
+### How verdicts settle
+
+For each trigger event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| A complete lookback met or exceeded the threshold | `Inconclusive(epistemic)`, carrying the over-threshold finding |
+| The guard refused: no answer will ever exist for the asked lookback | `Inconclusive(epistemic)` |
+| No cold guard is bound, so no count was ever asked for | `Inconclusive(epistemic)` |
+| A guard is bound and has not settled | `Inconclusive(prefix)` |
+| Complete lookback under threshold, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+Missing evidence is never a pass. An unasked count and an outstanding count are distinct
+non-answers, and both settle short of `Satisfy`.
+
+An over-threshold count settles as authoritative `Inconclusive`, never as `Violate`. This
+is the hot/cold composition boundary, not caution about the count: a cold conclusion cannot
+mint a violation until the cold-witness trust boundary lands. The verdict carries an
+epistemic detail naming the over-threshold finding, so triage can distinguish a breached cap
+from ordinary uncertainty.
+
+### Current status
+
+`aggregation.count-within` evaluates end to end: instantiation lowers to an aggregate
+monitor, the derived count-within guard is bound automatically, and the evaluator settles
+one verdict per binding under the table above. Sequence lookback is the only window shape.
+Wall-clock windows, sum and distinct-count aggregations, and violations minted from cold
+failures are not yet supported.
+
 ## Instantiating a pattern
 
 Bind every declared parameter and every evidence role, then call `instantiate`. This example
@@ -326,6 +412,11 @@ let instance = instantiate(
     evidence,
 )?;
 ```
+
+Integer-valued parameters bind the same way. An `aggregation.count-within` instantiation
+passes `ParameterValue::SequenceLookbackBound(64)` for `lookback` and
+`ParameterValue::CountThreshold(3)` for `threshold` alongside its attribute-key and
+selector arguments.
 
 A missing or mistyped parameter is an error: the instantiation is refused. A source placed
 below the tier its role demands is a warning, because the required tier is a specification
