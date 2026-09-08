@@ -8,7 +8,7 @@ reusable temporal property with a fixed parameter schema: you bind its parameter
 event kinds and attribute keys, bind its evidence roles to your deployed sources, and the
 result compiles to a monitor and an event filter.
 
-The catalogue currently holds four patterns:
+The catalogue currently holds five patterns:
 
 | ID | Pattern | Shape | What it checks |
 | --- | --- | --- | --- |
@@ -16,12 +16,15 @@ The catalogue currently holds four patterns:
 | `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
 | `absence.after-until` | Absence between after and until | Absence | A veto event never occurs inside the open interval `(after, until]` for the same binding. |
 | `aggregation.count-within` | Count within sequence lookback | Aggregation | At a trigger event, the count of matching member events inside a sequence lookback for the same binding stays strictly below a threshold. |
+| `existence.before-scope-close` | Existence before scope close | Existence | A required event occurs at least once inside `(open, close]` before the scope closes, for the same binding. |
 
 `precedence.approval`, `provenance.taint`, and `absence.after-until` evaluate on the hot
 path with an event-local scope: each obligation is raised and settled at a single trigger
 event, over that event's causal past. `aggregation.count-within` raises its obligation the
 same way, but the count is answered on the [cold path](/sentinel/reference/cold-path), one
-fact query per binding.
+fact query per binding. `existence.before-scope-close` also evaluates on the hot path, but
+over a between scope that opens at one event and closes at another rather than settling at a
+single trigger.
 
 ## precedence.approval
 
@@ -356,6 +359,162 @@ monitor, the derived count-within guard is bound automatically, and the evaluato
 one verdict per binding under the table above. Sequence lookback is the only window shape.
 Wall-clock windows, sum and distinct-count aggregations, and violations minted from cold
 failures are not yet supported.
+
+## existence.before-scope-close
+
+Formula: `EF_Scope(required)`.
+
+Use this pattern when a required event must occur between an opening event and a closing
+event for the same unit of work. Typical uses: a compensation must be recorded before a saga
+terminates, a cleanup step must run before a lease is released, an audit record must be
+written before a session closes.
+
+This is the catalogue's first pattern with a **between scope**. The scope opens at an event
+matching the `open` selector and closes at an event matching the `close` selector. The
+required event must lie inside the interval `(open, close]`: a required event at the `close`
+event itself discharges the obligation, while one at the `open` event does not. Obligations
+key on the `open` selector only. A trace full of required events with no scope open raises
+nothing and can never pass vacuously.
+
+It is also the catalogue's first pattern with a retirement policy, because a between scope
+can fail to close. See [scope retirement](#scope-retirement) below.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. Each binding gets its own slice and its own verdict. |
+| `open` | selector | Events that open the between scope and raise the existence obligation. One obligation per matching event per binding. |
+| `required` | selector | Events that must occur at least once inside `(open, close]`. Their presence discharges the obligation; their absence at a settled close is the violation. |
+| `close` | selector | Events that close the between scope. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `required_source` | Anchor | Causal edges, completeness signals |
+| `close_source` | Contributing | Causal edges |
+| `open_source` | Contributing | None |
+
+A violation here rests on the *absence* of a required event inside the interval, and an
+absence has no witness of its own, so the required source demands anchor tier plus
+completeness signals: contributing-only silence cannot convict. The open and close events
+witness themselves, so contributing tier suffices for both. The close source still needs
+causal edges, because open-before-close ordering is the scope's close condition.
+
+### How verdicts settle
+
+For each `open` event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| An open, required, or close event is concurrent where the order matters | `Inconclusive(observational)` |
+| No `close` event yet | `Inconclusive(prefix)` |
+| The scope closed, a required event lies inside `(open, close]`, and evidence coverage is closed | `Satisfy` |
+| The scope closed, no required event lies inside it, coverage is closed, and anchor-tier silence confirms the absence | `Violate` |
+| The scope closed, no required event lies inside it, but the required source is contributing-tier only or coverage is still open | `Inconclusive(prefix)` |
+
+A binding with several open events settles on the worst outcome across them, the same
+universal conjunction the other hot patterns use. Missing evidence is never a pass: a scope
+that has not closed stays inconclusive rather than settling either way.
+
+### Scope retirement
+
+A between scope can fail to close. A saga whose termination event never arrives would
+otherwise hold its obligation open forever, so this pattern declares a `Deadline` retirement
+policy: your periphery decides when to stop waiting and delivers a retirement signal naming
+the binding, the horizon it stopped waiting at, and the cause. Sentinel never reads a wall
+clock to make that call. The deadline is your infrastructure's decision, and Sentinel's
+contribution is comparing the horizon against each event's own observation time.
+
+Once a binding's scope is retired:
+
+- The binding settles as `Inconclusive(prefix)`, structurally. A retired binding never
+  settles `Satisfy` or `Violate`, even when later evidence would have licensed one.
+  Retirement means the periphery stopped waiting, not that the property held or failed.
+- The verdict's detail names the retirement cause and horizon, and discloses any slice
+  members the horizon excluded, so a retired verdict still reports the evidence behind it.
+- Retirement never retracts. Sentinel refuses a retirement signal for a binding that has
+  already emitted a `Satisfy` or `Violate`, and refuses a horizon that regresses below one
+  already recorded.
+
+Sentinel also refuses a retirement signal against a specification whose pattern declares no
+retirement policy, which is every other pattern in the catalogue today, and one whose cause
+is not the declared one. `Deadline` is the only cause this pattern declares: an `Inactivity`
+cause exists in the grammar, but no catalogued pattern declares it yet.
+
+### Example
+
+This instantiation requires a compensation to be recorded before a saga terminates:
+
+```rust
+use std::collections::BTreeMap;
+
+use sentinel_compile::catalogue::{
+    instantiate, EvidenceBinding, ParameterValue, PatternId, SelectorValue,
+};
+
+let arguments = BTreeMap::from([
+    (
+        "binding_attribute".to_owned(),
+        ParameterValue::AttributeKey("example.saga.id".to_owned()),
+    ),
+    (
+        "open".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.saga.opened")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "required".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.compensation.recorded")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "close".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.saga.terminated")?,
+            BTreeMap::new(),
+        )),
+    ),
+]);
+
+let evidence = BTreeMap::from([
+    (
+        "open_source".to_owned(),
+        EvidenceBinding::new(saga_orchestrator, SourceTier::Contributing, no_capabilities),
+    ),
+    (
+        "required_source".to_owned(),
+        EvidenceBinding::new(compensation_ledger, SourceTier::Anchor, full_capabilities),
+    ),
+    (
+        "close_source".to_owned(),
+        EvidenceBinding::new(saga_orchestrator, SourceTier::Contributing, causal_edges),
+    ),
+]);
+
+let instance = instantiate(
+    PatternId::ExistenceBeforeScopeClose,
+    identity,
+    contract,
+    arguments,
+    evidence,
+)?;
+```
+
+### Current status
+
+`existence.before-scope-close` evaluates end to end on the hot path, with zero cold-path
+fact requests per verdict. Candidate proposals can target the pattern, and candidate replay
+evaluates existence candidates over the corpus the same way it does for the other hot
+patterns. Enforcement decisions remain detect-only: an existence specification produces
+verdicts but does not gate pending actions. A retired verdict carries its retirement cause
+as free-text detail rather than a structured reason code.
 
 ## Instantiating a pattern
 
