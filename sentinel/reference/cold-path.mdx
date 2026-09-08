@@ -1,6 +1,6 @@
 ---
 title: "Cold-path guards"
-description: "How Sentinel evaluates relational properties off the hot path: fact queries, guard conclusions, the lookback window, and the causal group invariant operator."
+description: "How Sentinel evaluates relational properties off the hot path: fact queries, guard conclusions, the lookback window, and the catalogued guard operators."
 ---
 
 Some properties cannot be settled at a single trigger event over its causal past. A
@@ -13,9 +13,9 @@ per binding, and a resolver answers against stored evidence.
 <Note>
 The cold path ships as a library today: the guard catalogue, window planner, and resolver
 live in the `sentinel-coldpath` crate, and the fact protocol lives in
-`sentinel_core::facts`. The catalogue currently holds one operator, the causal group
-invariant. Specifications without declared guards are unaffected: their verdicts are
-byte-identical to before.
+`sentinel_core::facts`. The catalogue currently holds two operators: the causal group
+invariant and count-within. Specifications without declared guards are unaffected: their
+verdicts are byte-identical to before.
 </Note>
 
 ## Declaring a guard
@@ -76,10 +76,12 @@ A terminal `Refused` settles the binding's verdict as authoritative
 neither `Satisfy` nor `Violate` can be honestly claimed. Missing evidence is never turned
 into a pass. A reaped or never-retained window is `Refused`, never `Holds`.
 
-A `Fails` conclusion is stored with its witnesses but does not currently flip the verdict:
-a cold `Fails` never overrides a hot `Satisfy`, and composing cold conclusions into
-`Violate` outcomes is future work. Use the cold path today to detect relational failures in
-stored conclusions and to get honest epistemic downgrades when evidence is gone.
+A `Fails` conclusion never mints a `Violate`. For a specification that consumes its guard's
+answer, such as [`aggregation.count-within`](/sentinel/reference/patterns#aggregation-count-within),
+a `Fails` settles the binding as authoritative `Inconclusive(epistemic)` with the finding
+named in the verdict's detail. For other specifications the conclusion is stored with its
+witnesses but does not flip the verdict: a cold `Fails` never overrides a hot `Satisfy`,
+and composing cold conclusions into `Violate` outcomes is future work.
 
 ## The lookback window
 
@@ -95,7 +97,7 @@ evaluating over a cut window and answering `Holds`.
 
 ## The causal group invariant
 
-The one catalogued operator, `CausalGroupInvariant`, groups window events by a key that is
+The first catalogued operator, `CausalGroupInvariant`, groups window events by a key that is
 *not* the binding attribute, then checks a pairwise predicate along the causal order inside
 each group. Grouping by the binding key is rejected at construction, because per-binding
 properties belong on the hot path.
@@ -115,6 +117,33 @@ SagaShop's P5, inventory monotonic decrement: reservations for the same item, ma
 different orders, must record strictly decreasing stock counts along their causal order.
 Two concurrent reservations for the same item that record the same stock count fail the
 concurrent fallback, which is exactly the double-spend shape.
+
+## The count-within operator
+
+The second catalogued operator, `CountWithin`, counts window events matching a member
+selector and compares the count to a threshold. It backs the
+[`aggregation.count-within`](/sentinel/reference/patterns#aggregation-count-within)
+pattern, which derives its guard automatically at instantiation, so you rarely construct
+this operator by hand.
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `member` | selector | Events counted inside the lookback, matched by kind and required attribute equalities. |
+| `threshold` | integer | Exclusive upper bound on the member count. |
+
+The lookback width is not an operator parameter. It lives on the guard definition's
+`LookbackBound`, in sequence positions, and the operator never interprets wall-clock
+durations.
+
+Unlike the causal group invariant, this operator can refuse: an incomplete lookback answers
+`Refused`, never `Holds`, because a count over missing evidence is not a count. Over a
+complete lookback the operator is total:
+
+| Condition | Conclusion |
+| --- | --- |
+| The lookback is incomplete | `Refused` |
+| Complete lookback, count strictly below the threshold (including zero members) | `Holds` |
+| Complete lookback, count at or over the threshold | `Fails`, naming each counted member as a witness |
 
 ## Example
 

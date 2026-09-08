@@ -95,11 +95,19 @@ drop is reported in the generation report rather than hidden.
 
 ## The proposal grammar
 
-A proposal binds each declared pattern parameter to one of two value shapes:
+A proposal binds each declared pattern parameter to one of four value shapes:
 
 - An attribute key, such as `sagashop.order.id`.
 - A selector: an event kind plus the string-valued attribute valuations a matching event
   must carry.
+- A sequence lookback bound: how many sequence positions of causal evidence an aggregation
+  counts over. A bound of `0` is refused at admission.
+- A count threshold: the exclusive upper bound an aggregation's member count must stay
+  below. A threshold of `0` is refused at admission, because it would forbid the trigger
+  outright.
+
+The two integer shapes exist for the `aggregation.count-within` pattern and are refused
+anywhere the catalogue does not declare them.
 
 Monitor IR is not expressible in this grammar, so a proposal source cannot emit it whatever
 it produces. Values are strings at this boundary on purpose: a misspelled event kind has to
