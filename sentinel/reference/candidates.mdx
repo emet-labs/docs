@@ -13,11 +13,12 @@ Generation never promotes anything. A candidate becomes a specification only thr
 reviewed promotion, which is a separate, later decision.
 
 <Note>
-Candidate generation and persistence ship as libraries today. Nothing serves or renders
-candidates yet, and reviewed promotion is not yet available. Published specifications do warm
-in a [shadow rollout](/sentinel/reference/rollout). This page documents the generation
-pipeline, the evidence model, and the candidate store so you can evaluate and persist
-candidates programmatically.
+Persisted candidates are now served over HTTP. The
+[control plane API](/sentinel/reference/api#get-v1candidates) lists candidates, reads one
+with recomputed promotion blockers, and records a reviewed promotion or rejection, and the
+[dashboard](/sentinel/dashboard) renders that surface live on its Candidates page.
+Generating candidates still happens through the libraries documented here. Published
+specifications warm in a [shadow rollout](/sentinel/reference/rollout).
 </Note>
 
 ## How generation works
@@ -355,6 +356,12 @@ The lifecycle is enforced by the store, not by convention:
   `publish_filter_and_put_candidate`, which publishes an event filter and writes the record in
   one transaction. Neither half is visible if the other fails, and the filter must contain the
   candidate's identity.
+
+To record the reviewed decision over HTTP, call the control plane's
+[review endpoint](/sentinel/reference/api#post-v1candidatesspecification_idspecification_versionreview).
+It enforces the same lifecycle: a non-blank note is required, an already-reviewed candidate
+is refused as a conflict, and a promote is refused while recomputed promotion blockers are
+non-empty.
 
 Reads are `get_candidate` by specification id and version, and `list_candidates`, which pages
 in lexicographic identity order behind a cursor:
