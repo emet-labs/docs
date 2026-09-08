@@ -1,6 +1,213 @@
 ---
-title: "API reference"
-description: "Endpoints, authentication, and request/response formats."
+title: "Control plane API"
+description: "Run the sentinel-periphery HTTP server and use its endpoints to ingest evidence, publish a sample filter, evaluate, and read verdicts."
 ---
 
-Coming soon.
+`sentinel-periphery` is Sentinel's control-plane server. It exposes an HTTP API that wires
+the full detection path end to end: ingest capture evidence, publish an event filter, run a
+coverage-gated evaluation, and read the persisted verdict. You can produce a persisted
+verdict entirely over HTTP, without calling the library crates directly.
+
+<Note>
+This is the milestone-A surface. Filter publication is limited to one built-in sample
+specification, there is no live OTLP ingest, and no enforcement decide endpoint answers
+probes yet. The API has no authentication, so the server refuses to bind non-loopback
+addresses unless you explicitly override it.
+</Note>
+
+## Run the server
+
+From the repository root, inside the Devbox shell:
+
+```bash
+just periphery
+```
+
+The server prints its listen address and store backend on startup. Configuration is
+environment-driven:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SENTINEL_LISTEN` | `127.0.0.1:8080` | Socket address to bind. |
+| `SENTINEL_STORE` | `memory` | Store backend: `memory` or `postgres`. |
+
+The in-memory store is a rehearsal backend: state disappears when the process exits.
+Production-shaped runs use Postgres. Select it with `SENTINEL_STORE=postgres` and point the
+server at a migrated database (`just migrate`) using either the standard libpq variables
+(`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`) or an explicit flag:
+
+```bash
+SENTINEL_STORE=postgres just periphery --database-url postgres://user:pass@localhost:5432/sentinel
+```
+
+Because the API is unauthenticated, binding a non-loopback address fails at startup. Pass
+`--allow-non-loopback` to override that guard deliberately:
+
+```bash
+SENTINEL_LISTEN=0.0.0.0:8080 just periphery --allow-non-loopback
+```
+
+## Endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/healthz` | Process liveness. |
+| `GET` | `/readyz` | Store round-trip readiness. |
+| `POST` | `/v1/evidence/capture-envelope` | Ingest a `capture-envelope-v1` artifact as events and source evidence. |
+| `POST` | `/v1/filters/bootstrap-cat1` | Publish the built-in sample CAT-1 filter at a pinned observation time. |
+| `POST` | `/v1/evaluate` | Run a coverage-gated evaluation and persist the resulting verdicts. |
+| `GET` | `/v1/verdicts/{id}` | Read the latest revision of a verdict. |
+
+### GET /healthz
+
+Returns `200` with `{"status": "ok"}` while the process is alive. It makes no claim about
+the store.
+
+### GET /readyz
+
+Returns `200` when the store answers a control-plane read. On the memory backend the store
+is always ready. On Postgres the server performs a real round-trip and returns `503` with
+kind `store_not_ready` when the read fails, for example because migrations have not been
+applied.
+
+```json
+{ "status": "ready", "store": "postgres", "note": "DB answered current_event_filter; not full semantic readiness" }
+```
+
+### POST /v1/evidence/capture-envelope
+
+Accepts a raw `capture-envelope-v1` JSON body, adapts it, and persists the resulting events
+and source evidence. The vendored SagaShop fixtures are valid bodies:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/evidence/capture-envelope \
+  -H 'content-type: application/json' \
+  --data-binary @testdata/sagashop/ts-happy.json
+```
+
+```json
+{ "events_inserted": 16, "events_conflicted": 0, "sources_recorded": 4 }
+```
+
+Re-posting the same capture is idempotent: duplicate events count as `events_conflicted`
+instead of failing. A body that fails decoding returns `400`. Evidence carrying the Corpus
+data class returns `409` with kind `corpus_data_class`, because Corpus evidence can never
+produce verdicts.
+
+### POST /v1/filters/bootstrap-cat1
+
+Publishes the built-in sample specification, `sagashop.p4.ship-requires-prior-charge`, as an
+event filter. The server never reads the wall clock, so you supply the publication instant:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/filters/bootstrap-cat1 \
+  -H 'content-type: application/json' \
+  -d '{"observed_at": {"sentinel_clock_id": "sentinel", "nanoseconds": 1700000000000}}'
+```
+
+```json
+{
+  "filter_epoch": 1,
+  "specification_id": "sagashop.p4.ship-requires-prior-charge",
+  "note": "Sample-only CAT-1 bootstrap. Without post-publication completeness rewrite + advance_readiness, Verdicts stay Warming + Shadow."
+}
+```
+
+A publish that fails a precondition returns `409`.
+
+### POST /v1/evaluate
+
+Runs the coverage-gated evaluation for a specification and persists the resulting verdicts.
+The request names the specification:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/v1/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"specification_id": "sagashop.p4.ship-requires-prior-charge"}'
+```
+
+```json
+{
+  "specification_id": "sagashop.p4.ship-requires-prior-charge",
+  "verdict_count": 1,
+  "verdicts": [
+    {
+      "id": "…",
+      "outcome": "Satisfy",
+      "authority": "Provisional",
+      "wire_protobuf_hex": "…"
+    }
+  ],
+  "note": "Warming + Shadow is the expected Milestone-A outcome without advance_readiness"
+}
+```
+
+`outcome` is `Satisfy`, `Violate`, or `Inconclusive`. `authority` is `Provisional` or
+`Authoritative`; on this milestone, verdicts stay `Provisional` because the sample bootstrap
+never advances readiness past warming. `wire_protobuf_hex` is the canonical protobuf encoding
+of the verdict, hex-encoded.
+
+Evaluation refuses to run rather than answer dishonestly:
+
+- `404` with kind `unknown_specification` when the id is not the sample specification.
+- `409` with kind `no_published_filter` when no filter has been published; call
+  `POST /v1/filters/bootstrap-cat1` first.
+- `409` when evidence coverage is incomplete for a required source. Missing evidence never
+  becomes a pass.
+
+### GET /v1/verdicts/\{id\}
+
+Returns the latest revision of a verdict by id, in the same shape as an `/v1/evaluate`
+verdict entry. Returns `404` with kind `verdict_not_found` when no verdict matches.
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/verdicts/<verdict-id>
+```
+
+## Errors
+
+Every error is a JSON body with a stable machine-oriented `kind` and a human-readable
+`message`:
+
+```json
+{ "kind": "no_published_filter", "message": "no published Event Filter; call POST /v1/filters/bootstrap-cat1 first" }
+```
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed body or unsupported data class on ingest. |
+| `404` | Unknown specification or verdict id. |
+| `409` | Precondition failed: no published filter, incomplete evidence coverage, or Corpus-class evidence on a verdict path. |
+| `500` | Store or evaluation failure. |
+| `503` | Store not ready (readiness probe only). |
+
+## End-to-end example
+
+The full detection path over the memory backend, using a vendored SagaShop capture:
+
+```bash
+# 1. Liveness and readiness.
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:8080/readyz
+
+# 2. Ingest capture evidence.
+curl -sS -X POST http://127.0.0.1:8080/v1/evidence/capture-envelope \
+  -H 'content-type: application/json' \
+  --data-binary @testdata/sagashop/ts-happy.json
+
+# 3. Publish the sample filter at a pinned observation time.
+curl -sS -X POST http://127.0.0.1:8080/v1/filters/bootstrap-cat1 \
+  -H 'content-type: application/json' \
+  -d '{"observed_at": {"sentinel_clock_id": "sentinel", "nanoseconds": 1700000000000}}'
+
+# 4. Evaluate and capture the verdict id from the response.
+curl -sS -X POST http://127.0.0.1:8080/v1/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"specification_id": "sagashop.p4.ship-requires-prior-charge"}'
+
+# 5. Read the persisted verdict back.
+curl -sS http://127.0.0.1:8080/v1/verdicts/<verdict-id>
+```
+
+The expected result on the happy-path fixture is a `Provisional` verdict: the honest signal
+that the sample bootstrap runs in warming and shadow rather than at authoritative strength.
