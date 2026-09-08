@@ -9,9 +9,11 @@ candidate review. It is built for keyboard-first use, with a command palette and
 shortcuts throughout.
 
 <Note>
-The dashboard currently renders representative sample data, and every page shows an
-`Interface preview · sample data` marker. It defines the intended workflows but does not yet
-read from or write to a running Sentinel deployment. No control on any page writes anywhere.
+Most pages render representative sample data, and every page shows an
+`Interface preview · sample data` marker. The Candidates page is the first live surface: it
+reads and writes through the [control plane API](/sentinel/reference/api) and carries its
+own `Live Candidate control plane` chip. Every other page defines the intended workflow
+without reading from or writing to a running Sentinel deployment.
 </Note>
 
 ## Running the dashboard
@@ -29,6 +31,13 @@ The dashboard listens on `127.0.0.1:5173` by default. Set `SENTINEL_DASHBOARD_HO
 SENTINEL_DASHBOARD_HOST=0.0.0.0 SENTINEL_DASHBOARD_PORT=8080 just run
 ```
 
+The live Candidates page needs a running `sentinel-periphery` server. Set
+`VITE_SENTINEL_API_URL` to the server's base URL so the dashboard can reach it:
+
+```bash
+VITE_SENTINEL_API_URL=http://127.0.0.1:8080/ just run
+```
+
 ## Pages
 
 | Route | What it shows |
@@ -39,13 +48,16 @@ SENTINEL_DASHBOARD_HOST=0.0.0.0 SENTINEL_DASHBOARD_PORT=8080 just run
 | `/metrics` | Per-specification outcomes, inconclusive reasons, and coverage gaps linked to blocked verdicts |
 | `/patterns` | Catalogue browsing and the entry point for pattern instantiation |
 | `/specifications`, `/specifications/:id` | Specification detail, shadow evaluation, and filter epoch readiness |
-| `/candidates` | Candidate provenance, replay evidence, and deliberate promotion or rejection |
+| `/candidates` | Live candidate review: provenance, replay evidence, and deliberate promotion or rejection |
 | `/fleet` | Per-source health, watermark lag, source tiers, and filter epochs |
 
-Candidate promotion in the dashboard follows the same rule as the
-[generation pipeline](/sentinel/reference/candidates): promotion is a reviewed act. The
-Candidates page surfaces promotion blockers and asks you to confirm before anything is
-promoted. Nothing promotes silently.
+The Candidates page reads persisted candidates from the
+[control plane API](/sentinel/reference/api#get-v1candidates) and records promote and reject
+decisions through the review endpoint. Promotion follows the same rule as the
+[generation pipeline](/sentinel/reference/candidates): promotion is a reviewed act. The page
+surfaces promotion blockers, requires a reviewer note, and asks you to confirm before
+anything is promoted. The server enforces the blockers again, so nothing promotes silently.
+The list shows the first page of candidates only until cursor pagination ships.
 
 ## Command palette
 
