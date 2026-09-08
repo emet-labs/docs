@@ -47,6 +47,7 @@
               "sentinel/reference/rollout",
               "sentinel/reference/decisions",
               "sentinel/reference/cold-path",
+              "sentinel/reference/retention",
               "sentinel/reference/sdk",
               "sentinel/reference/api"
             ]

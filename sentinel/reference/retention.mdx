@@ -1,0 +1,107 @@
+---
+title: "Raw event retention"
+description: "Configure how long Sentinel retains raw events per tenant, and how the retention horizon is stamped on every verdict's assurance envelope."
+---
+
+Raw events are the evidence verdicts are built from, and they do not live forever. A
+retention policy bounds how long the store keeps them: a reaper drops evidence past the
+horizon, appends outside the admission window are refused, and every sealed verdict records
+the horizon it was evaluated under on its assurance envelope. A verdict therefore stays
+auditable after its underlying events age out.
+
+<Note>
+Retention ships as a library surface today: the policy lives on the store's
+`ControlPlaneStore` trait, reaping on `RetentionStore`, and the envelope stamp on the core
+`Evaluator`. No HTTP endpoint sets the policy yet.
+</Note>
+
+## The retention policy
+
+The store holds a single retention policy, disabled by default. Sentinel ships the
+mechanism without choosing a number for you: until you opt in, nothing is reaped. A policy
+carries five fields:
+
+| Field | Meaning |
+| --- | --- |
+| `enabled` | Whether reaping and admission enforcement are active. |
+| `horizon_days` | How many days of raw events are retained. Evidence past the horizon is reaped. |
+| `reap_granularity_days` | The width of one reap bucket, and the storage partition width. |
+| `backdating_admission_window_days` | How far into the past an appended event's occurrence time may sit. |
+| `forward_admission_window_days` | How far into the future an appended event's occurrence time may sit. |
+
+`RetentionPolicy::new` validates the numeric invariants at construction: the horizon must
+be at least the reap granularity, and both admission windows must sit between the
+granularity and the horizon. An event appended outside the admission window is refused,
+and the refusal is recorded as a never-retained interval rather than left as a silent hole.
+
+## Governance bounds
+
+When a policy is enabled, its horizon must sit inside the platform governance bounds: **7
+to 365 days**, inclusive. `RetentionPolicy::new` refuses an enabled policy outside that
+range with `HorizonOutOfGovernanceBounds`. A disabled policy skips the governance check
+because it makes no retention claim.
+
+Read the effective tenant horizon with `RetentionPolicy::raw_event_retention_days`. It
+returns the validated horizon when the policy is enabled, and `None` when disabled. The
+helper never substitutes the platform default: `None` means no tenant horizon is
+configured, and it is the caller's job to decide what that means.
+
+## The envelope stamp
+
+Every sealed verdict carries `raw_event_retention_days` on its assurance envelope, across
+all five envelope families. The value records the horizon the verdict was evaluated under:
+
+- When retention is enabled, the tenant-configured horizon.
+- When retention is disabled, the platform default of **30 days**.
+
+The disabled-path stamp records intent, not enforcement: it says no tenant override was
+configured, not that a reaper is enforcing a 30-day horizon. Read the stamp back with
+`Verdict::raw_event_retention_days()`.
+
+`evaluate_published` in `sentinel-api` wires this end to end: it reads the store's
+retention policy, maps a disabled policy to the platform default, and constructs the
+evaluator with the resulting horizon. You only need the manual injection below when you
+drive the core evaluator directly.
+
+## Injecting a horizon into the evaluator
+
+The core evaluator never reads the store or a clock. A caller that knows the tenant
+horizon supplies it as validated data via `with_raw_event_retention`; without the call,
+the evaluator stamps the platform default:
+
+```rust
+use sentinel_core::evaluator::Evaluator;
+use sentinel_model::RawEventRetentionDays;
+
+// Validated at construction: try_new refuses anything outside 7..=365.
+let retention = RawEventRetentionDays::try_new(45)?;
+
+let evaluator = Evaluator::new(specification).with_raw_event_retention(retention);
+let sealed = sentinel_core::evaluate(evaluator, events, sources)?;
+
+for binding in &sealed {
+    assert_eq!(binding.verdict().raw_event_retention_days(), retention);
+}
+```
+
+To configure the tenant horizon itself, replace the store's policy:
+
+```rust
+use sentinel_store::RetentionPolicy;
+
+// Opt in: 45-day horizon, 1-day reap buckets, 7-day admission windows.
+let policy = RetentionPolicy::new(true, 45, 1, 7, 7)?;
+store.set_retention_policy(&policy).await?;
+```
+
+## Reaping and reaped evidence
+
+`RetentionStore::apply_retention` reaps everything at or below the horizon and returns a
+`ReapReport` naming what was dropped. Reaped ranges are tracked as intervals, so a later
+read knows exactly which evidence no longer exists.
+
+Missing evidence is never turned into a pass. A cold-path fact query whose window overlaps
+a reaped range is answered `Refused(EvidenceReaped)`, which settles the binding as
+authoritative `Inconclusive(epistemic)`. See
+[cold-path guards](/sentinel/reference/cold-path#refusal-reasons) for the full refusal
+semantics.
