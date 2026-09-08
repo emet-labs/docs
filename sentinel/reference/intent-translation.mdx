@@ -1,0 +1,166 @@
+---
+title: "Intent translation"
+description: "Translate Cedar and Dogwood policies into Sentinel candidate proposals, and review first-class refusals when a construct cannot be expressed."
+---
+
+If you already govern agents with Cedar or Dogwood policies, you do not have to restate them
+by hand. The `sentinel-interop` crate reads the machine-readable form of a policy set and
+translates each temporal construct into one of two outcomes: a catalogue-constrained proposal
+ready for [candidate generation](/sentinel/reference/candidates), or a first-class
+translation refusal. There is no third outcome. A construct the catalogue cannot express is
+refused with a stable code and a citation, never approximated and never silently dropped.
+
+<Note>
+Translation ships as a library. It is translation only: your policies come across as intent
+artifacts and become Sentinel candidates through the normal generation pipeline. Nothing
+renders refusals in a dashboard yet, and translated candidates still require reviewed
+promotion like any other candidate.
+</Note>
+
+## What the translator accepts
+
+Both input surfaces are structured JSON documents, parsed by shape:
+
+| Source | Format tag | Shape |
+| --- | --- | --- |
+| Cedar | `cedar-policy-json-v1` | The Cedar JSON policy AST: policies with effects, actions, and `when`/`unless` conditions. |
+| Dogwood | `dogwood-lowered-leaf-v1` | Lowered temporal leaves: one entry per temporal construct, with selectors, correlated attribute keys, and an optional wall-clock window. |
+
+Parse them with `parse_cedar_policy_set` and `parse_dogwood_lowered`. The translator never
+scrapes Cedar DSL text or `.dw` source for temporal structure; only the structured forms are
+read. A Dogwood document also carries evidence defaults, the monitored application and source
+identity that every successful proposal binds to its evidence roles:
+
+```json
+{
+  "format": "dogwood-lowered-leaf-v1",
+  "evidence_defaults": {
+    "monitoredApplication": "example-app",
+    "source": "example-probe"
+  },
+  "leaves": [
+    {
+      "leaf_id": "no-revoke-between-grant-and-action",
+      "construct": "absence-since",
+      "wall_clock_window": null,
+      "correlated_attributes": ["example.session.id"],
+      "citation_fragment": "!revoke since grant until action on example.session.id",
+      "temporal": {
+        "after": { "kind": "example.auth.grant", "requiredAttributes": {} },
+        "until": { "kind": "example.auth.action", "requiredAttributes": {} },
+        "veto": { "kind": "example.auth.revoke", "requiredAttributes": {} }
+      }
+    }
+  ]
+}
+```
+
+## How translation works
+
+`translate_dogwood` and `translate_cedar` each take an artifact id and a parsed set, and
+return a `TranslationReport` with two lists: `proposals` and `refusals`. Every proposal is an
+instantiation of a catalogued pattern in the same
+[proposal grammar](/sentinel/reference/candidates#the-proposal-grammar) a scripted or model
+source uses. The translator can never emit monitor IR, whatever the input contains.
+
+`every_temporal_leaf_translated()` on the report is true only when the refusal list is empty.
+
+To generate candidates from a report, wrap it in a `TranslatorSource` and pass it to
+`generate` like any other proposal source. Candidates produced this way carry the
+`translator` provenance kind, so a reviewer always sees that a candidate came from policy
+translation rather than a scripted list or a live model.
+
+## What translates
+
+Two Dogwood constructs instantiate patterns today. Everything else refuses:
+
+| Construct | Conditions | Pattern instantiated |
+| --- | --- | --- |
+| `formerly` | Precedence-shaped, no wall-clock window, exactly one binding key | `precedence.approval` |
+| `!P since Q` | Closed interval: opening `after`, closing `until`, and `veto` selectors, exactly one binding key | `absence.after-until` |
+
+The binding rule is strict. A leaf must share exactly one correlated attribute key across its
+predicates. Zero mappable keys refuses as `binding-unmapped`. Two or more distinct keys
+refuses as `multi-binding-unshipped`, because picking one and dropping the rest would change
+what the policy means.
+
+Plain Cedar `when`/`unless` conditions always refuse as `point-in-time-no-pattern`. The
+catalogue holds temporal patterns, and a point-in-time authorization check has no honest
+temporal reading. Temporal constructs that reach Sentinel through Dogwood's lowered leaves go
+through `translate_dogwood` instead.
+
+## Translation refusals
+
+A refusal is a reviewable record, not an error. Each one carries the artifact id, the leaf or
+policy id, a construct tag, a stable code, a human-readable reason, and a citation anchor of
+at least 24 non-whitespace characters locating the refused fragment. That is the same
+citation floor intent artifact citations carry.
+
+The codes are stable identifiers:
+
+| Code | Refused construct |
+| --- | --- |
+| `open-ended-between-unshipped` | `!P since Q` with no closing `until` delimiter. The translator never invents a close. |
+| `wall-clock-window` | A `formerly` leaf carrying a wall-clock `within` window. The whole leaf refuses; the window is never dropped to salvage the rest. |
+| `existence-pattern-unshipped` | An existence-shaped `formerly` that needs a pattern the catalogue does not ship. |
+| `binding-unmapped` | No event-attribute binding key could be mapped. |
+| `multi-binding-unshipped` | Two or more distinct binding keys are required. |
+| `point-in-time-no-pattern` | A plain Cedar `when`/`unless` with no temporal structure. |
+| `dogwood-wall-clock-aggregation` | An aggregation over a wall-clock window. `aggregation.count-within` counts sequence lookback, never wall-clock time. |
+| `aggregation-auto-remap-forbidden` | A window-less count that would need an automatic remap onto `aggregation.count-within`. That remap is a human decision, taken outside translation. |
+| `aggregation-member-unshipped` | A `sum_within` or `count_distinct_within` aggregation. |
+| `previous-not-offered` | A `previous within W` construct. |
+| `absolute-time-not-offered` | Absolute-time windows and daily quotas. |
+| `unrecognized-construct` | A malformed leaf, or any AST or leaf shape the translator does not recognize. |
+
+## Translating a policy set
+
+This example parses a Dogwood lowered-leaf document, translates it, inspects the refusals,
+and feeds the successful proposals into candidate generation:
+
+```rust
+use sentinel_candidate::generate;
+use sentinel_interop::{parse_dogwood_lowered, translate_dogwood, TranslatorSource};
+
+let document: serde_json::Value = serde_json::from_str(&policy_json)?;
+let lowered = parse_dogwood_lowered(&document)?;
+
+let report = translate_dogwood("payments-dogwood-policies", &lowered);
+
+for refusal in &report.refusals {
+    println!(
+        "{} [{}]: {}",
+        refusal.leaf_id, refusal.code, refusal.human_reason
+    );
+}
+
+let source = TranslatorSource::from_report("dogwood-translator", &report);
+let generation = generate(&source, &artifacts, &corpus, &contract, &naming, budget)?;
+```
+
+The report's proposals then face the same admission, citation, grounding, replay, and
+adversarial validation as every other proposal. Translation buys provenance and honesty, not
+a shortcut past the evidence gates.
+
+## Persisting refusals
+
+Refusals persist beside the candidates they were generated with, keyed by a generation run
+id. `put_translation_refusals` and `list_translation_refusals` in `sentinel_api` write and
+read them through any store that implements the candidate store, both the in-memory store and
+Postgres. Postgres support arrives with migration `0005`.
+
+```rust
+use sentinel_api::{list_translation_refusals, put_translation_refusals};
+
+put_translation_refusals(&store, "run-2026-09-08", &report.refusals).await?;
+
+let refusals = list_translation_refusals(&store, "run-2026-09-08").await?;
+for refusal in &refusals {
+    println!("{}: {}", refusal.code, refusal.citation_anchor);
+}
+```
+
+Listing decodes each stored row back into a typed refusal. A stored code this build does not
+recognize is an error, not a silently skipped row, and a stored citation that has collapsed
+below the 24-character floor is reported as corrupt. A refusal you persisted is a refusal you
+can still read, verbatim.
