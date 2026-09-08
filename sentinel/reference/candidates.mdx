@@ -82,7 +82,7 @@ subtract a known number instead of attributing them to the proposal source.
 ## Proposal sources
 
 A proposal source is anything that implements the `ProposalSource` trait: it identifies
-itself and returns proposals for a request. Three kinds are distinguished, and the kind is
+itself and returns proposals for a request. Four kinds are distinguished, and the kind is
 copied into every candidate's provenance:
 
 | Kind | Identifier | What it is |
@@ -90,6 +90,7 @@ copied into every candidate's provenance:
 | Recorded | `recorded` | A recording of an earlier run, replayed byte for byte |
 | Scripted | `scripted` | Proposals written in code, in memory |
 | Model | `model` | A model answering live |
+| Translator | `translator` | Proposals translated from Cedar or Dogwood policies. See [Intent translation](/sentinel/reference/intent-translation) |
 
 Each generation run takes a proposal budget, which is non-zero by type. Each admitted
 proposal costs a full corpus replay, so the budget is the only backstop on that fan-out. A

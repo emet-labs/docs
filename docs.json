@@ -44,6 +44,7 @@
             "pages": [
               "sentinel/reference/patterns",
               "sentinel/reference/candidates",
+              "sentinel/reference/intent-translation",
               "sentinel/reference/rollout",
               "sentinel/reference/decisions",
               "sentinel/reference/cold-path",
