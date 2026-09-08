@@ -1,0 +1,91 @@
+---
+title: "Regulatory posture"
+description: "What Sentinel does and does not determine under the EU AI Act: no Article 73 filings, no Article 79 risk findings, and how to use verdicts as evidence."
+---
+
+Sentinel reports what a deployment did against a specification, with the evidence to back
+it. It does not make legal determinations, and it does not file anything with an authority.
+If you deploy Sentinel as part of an EU AI Act compliance program, this page tells you where
+Sentinel's output stops and your own obligations begin.
+
+## Sentinel does not file Article 73 reports
+
+Article 73 serious-incident reports belong to the AI system's **provider**. As a deployer,
+your ordinary route is Article 26(5): inform the provider, who reports. Where the provider
+cannot be reached, Article 73 applies to you directly. Whoever it falls to, the decision to
+notify, the causal-link determination the report turns on, and the statutory clocks (15, 2,
+or 10 days depending on the incident class) stay with you.
+
+Sentinel produces no artifact that constitutes a filing:
+
+- No authority-submission transport exists, and none is planned.
+- A webhook delivery is not a filing. An export is not a submission.
+- No field records a notification deadline, a report clock, or an incident-opened timestamp.
+  Observation times and watermarks are evidence coordinates, not deadline anchors.
+- No field asserts that a notification occurred.
+
+Sentinel starts none of the statutory clocks, stops none of them, and knows about none of
+them.
+
+## A Violate is not an Article 79 risk finding
+
+Two determinations are commonly asked of monitoring output, and Sentinel makes neither:
+
+- Whether the AI system **presents a risk** under Article 79(1).
+- Whether the system was **substantially modified** under Article 3(23).
+
+Both are questions about a system and its intended purpose. A `Violate` verdict, even one
+settled on anchor-tier evidence with evidence coverage closed, is a statement about one
+specification over one trace. Do not describe a `Violate`, an evidence coverage gap, or a
+warming provisional verdict as either determination, and do not substitute one for your own
+Article 26(5) monitoring and escalation.
+
+## Assembling evidence for a notification
+
+If you have decided to notify, a verdict and its assurance envelope carry the evidence you
+would attach. Sentinel sends none of it anywhere; assembly and transmission are yours.
+
+| What you need | Where it lives |
+| --- | --- |
+| Specification identity | `specification_id` and `specification_version` on the assurance envelope |
+| Evidence coverage | Envelope fields: `required_sources`, `observed_sources`, `gaps`, `source_health`, `watermarks`, `source_tier_gap`, `unresolved_causal_edges`, `extraction_facts`, `capabilities` |
+| Settlement | `settlement_basis` plus the hot- and cold-path settlement watermarks |
+| The outcome and its honesty | `outcome`, `inconclusive_reason`, and `authority` on the verdict; `activation_barrier` on the envelope |
+
+Read a persisted verdict over HTTP to inspect these fields; see the
+[control plane API](/sentinel/reference/api).
+
+<Warning>
+Do not forward `Verdict.id` to identify a verdict in a payload. Sentinel formats the id as
+`specification:version:binding`, and the binding value (a conversation, user, or document
+identifier) travels in it verbatim. Forwarding the id whole forwards that identifier in
+plaintext. There is no per-verdict identifier without a binding today; reference the
+specification identity and version instead.
+</Warning>
+
+Binding values are personal data under Sentinel's data governance: they live in a separately
+keyed evidence-extract store with a 90-day default retention, after which only a hash
+remains. Binding context is permitted on the webhook and OTel channels and never on the
+Prometheus export, which carries per-specification aggregates only. Any payload you build
+that carries a binding inherits both constraints.
+
+## Reading a verdict series
+
+A series of distinct verdicts against a fixed specification version, with unchanged filter
+epochs, is a behavior-change signal you may use as one input among many to your Article 26(5)
+monitoring. Sentinel makes no claim about its sufficiency.
+
+Before reading a moving outcome as "the deployment changed," exclude the other two
+explanations. The assurance envelope separates the cases:
+
+1. **The measurement changed.** `specification_version`, `filter_epochs`, `schema_versions`,
+   or `capabilities` differ across the series.
+2. **The evidence moved.** `gaps`, `source_health`, `watermarks`, `source_tier_gap`,
+   `unresolved_causal_edges`, or `settlement_basis` shifted. This case is ordinary: raw
+   events are retained for 30 days by default while verdicts are retained for 7 years, so a
+   verdict needing events past the raw-event window becomes permanently `Inconclusive`. Any
+   long series drifts toward `Inconclusive` on retention alone.
+3. **The deployment's behavior changed.** What remains once 1 and 2 are excluded, and only
+   then.
+
+Missing evidence is never a pass. It is not a behavior change either.

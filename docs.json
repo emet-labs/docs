@@ -48,7 +48,8 @@
               "sentinel/reference/decisions",
               "sentinel/reference/cold-path",
               "sentinel/reference/sdk",
-              "sentinel/reference/api"
+              "sentinel/reference/api",
+              "sentinel/reference/regulatory-posture"
             ]
           }
         ]
