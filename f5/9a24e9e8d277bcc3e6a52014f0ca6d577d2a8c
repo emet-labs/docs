@@ -1,0 +1,21 @@
+AGENTS.md
+  s_b3adca4d965542::t_237ae3b56523bb 17-20
+trace-grab/transfer.mdx
+  s_b3adca4d965542::t_e67216598ebc3d 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f59a24e9e8d277bcc3e6a52014f0ca6d577d2a8c",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
