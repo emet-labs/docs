@@ -1,0 +1,43 @@
+AGENTS.md
+  s_b3adca4d965542::t_f28fc06c357385 38
+docs.json
+  s_b3adca4d965542::t_13c4a1b1b4a7f6 23,26-32,38,40-54,60-61,124-130
+sentinel/connect-a-probe.mdx
+  s_b3adca4d965542::t_06d580f57759a0 3,6,11,22,92,129,152
+sentinel/how-it-works.mdx
+  s_b3adca4d965542::t_803efc216fbd67 3,6,39
+sentinel/index.mdx
+  s_b3adca4d965542::t_1d03a50b0d1572 8,62
+sentinel/installation.mdx
+  s_b3adca4d965542::t_0d538724c98a16 143
+sentinel/multi-tenant-setup.mdx
+  s_b3adca4d965542::t_36ca174519872d 3,6-37
+sentinel/quickstart.mdx
+  s_b3adca4d965542::t_410c3ad7e98bb6 8,56,87,98,105,107,119
+sentinel/reference/api.mdx
+  s_b3adca4d965542::t_0f34bb5ff7b78c 3,6-335
+sentinel/sdk/dotnet.mdx
+  s_b3adca4d965542::t_42eb68f60fb901 27
+sentinel/sdk/index.mdx
+  s_b3adca4d965542::t_049db034892c32 6
+sentinel/sdk/rust.mdx
+  s_b3adca4d965542::t_d904db1f6d09e7 119
+sentinel/write-a-specification.mdx
+  s_b3adca4d965542::t_9f88f52b88d052 70,93,109-110,115,145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c4c2d2df7c633168acee5a42162fa0923582afb0",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
