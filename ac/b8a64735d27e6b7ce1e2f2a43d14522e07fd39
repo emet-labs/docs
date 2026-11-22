@@ -1,0 +1,33 @@
+sentinel/sdk/dotnet.mdx
+  s_b3adca4d965542::t_d22cc3b407c070 1-124
+sentinel/sdk/elixir.mdx
+  s_b3adca4d965542::t_65ec325df12b3a 1-137
+sentinel/sdk/go.mdx
+  s_b3adca4d965542::t_65a31c9712467e 1-142
+sentinel/sdk/index.mdx
+  s_b3adca4d965542::t_4e5a3692306d44 1-120
+sentinel/sdk/jvm.mdx
+  s_b3adca4d965542::t_4f665e7e7451d8 1-120
+sentinel/sdk/python.mdx
+  s_b3adca4d965542::t_bc40d75449a96d 1-153
+sentinel/sdk/rust.mdx
+  s_b3adca4d965542::t_b50dc7aa549721 1-144
+sentinel/sdk/typescript.mdx
+  s_b3adca4d965542::t_762c2b5d0b78d0 1-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "acb8a64735d27e6b7ce1e2f2a43d14522e07fd39",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
