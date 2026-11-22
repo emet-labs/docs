@@ -1,6 +1,6 @@
 ---
 title: "CLI reference"
-description: "Flags and options for grab and check."
+description: "Flags, options, environment variables, and exit codes for grab and check."
 ---
 
 ## `grab`
@@ -14,25 +14,23 @@ trace-grab grab <input> --out <dir>
   [--no-keymap]
 ```
 
-Reads, normalizes, sanitizes, and writes a bundle.
+The `grab` command reads, normalizes, sanitizes, and writes a bundle.
 
 | Flag | Description |
 | --- | --- |
-| `<input>` | Path to a file to read, or to a directory (LangSmith export only — requires `--from langsmith`). Required. |
-| `--out <dir>` | Directory to write the bundle to. Required. |
-| `--from <source>` | Force the source format instead of auto-detecting it. One of `langsmith-api`, `langsmith`, `otlp`, `generic`. Auto-detection only inspects a single file; a directory `<input>` requires `--from langsmith` explicitly. |
-| `--since <iso>` | Keep only traces overlapping this ISO-8601 start bound. |
-| `--until <iso>` | Keep only traces overlapping this ISO-8601 end bound. |
-| `--max-traces <n>` | Cap the number of traces written (non-negative integer). |
-| `--policy <path>` | Path to a policy file. Defaults to `tracegrab.yaml` in the current directory. |
-| `--salt-file <path>` | Path to the salt file. Defaults to `.trace-grab/salt`, created on first run. |
-| `--no-keymap` | Skip writing `.trace-grab/keymap.jsonl`. |
+| `<input>` | The path to a file to read, or to a directory. A directory works for a LangSmith export only and requires `--from langsmith`. Required. |
+| `--out <dir>` | The directory for the bundle. Required. |
+| `--from <source>` | Sets the source format. Without this flag, trace-grab detects the format. Values: `langsmith-api`, `langsmith`, `otlp`, `generic`. Auto-detection inspects only a single file. A directory `<input>` requires `--from langsmith`. |
+| `--since <iso>` | Keeps only traces that overlap this ISO-8601 start bound. |
+| `--until <iso>` | Keeps only traces that overlap this ISO-8601 end bound. |
+| `--max-traces <n>` | Limits the number of traces that trace-grab writes. Use a non-negative integer. |
+| `--policy <path>` | The path to a policy file. The default is `tracegrab.yaml` in the current directory. |
+| `--salt-file <path>` | The path to the salt file. The default is `.trace-grab/salt`. trace-grab creates it on the first run. |
+| `--no-keymap` | Does not write `.trace-grab/keymap.jsonl`. |
 
-`--api-key` is intentionally not supported — set `LANGSMITH_API_KEY` in the environment
-instead, so the key never appears in shell history or process listings.
+The `--api-key` flag is not supported. Set `LANGSMITH_API_KEY` in the environment instead. Then the key does not appear in shell history or process listings.
 
-On success, `grab` prints how many records were written and how many traces were excluded by
-the time window or the trace cap.
+When `grab` succeeds, it prints the number of records that it wrote. It also prints the number of traces that the time window or the trace cap excluded.
 
 ## `check`
 
@@ -40,23 +38,24 @@ the time window or the trace cap.
 trace-grab check --value <v> <bundle-dir> [--salt-file <path>]
 ```
 
-Tokenizes `<v>` with the local salt, then searches `<bundle-dir>/corpus.jsonl` for both the
-resulting token and the plaintext value. Read-only — the searched value is never written to
-disk.
+The `check` command tokenizes `<v>` with the local salt. It then searches `<bundle-dir>/corpus.jsonl` for the token and for the plaintext value. It is read-only. It never writes the searched value to disk.
 
 | Flag | Description |
 | --- | --- |
 | `--value <v>` | The value to look up. Required. |
-| `<bundle-dir>` | Directory containing a `corpus.jsonl` written by `grab`. Required. |
-| `--salt-file <path>` | Path to the salt file, if not the default `.trace-grab/salt`. |
+| `<bundle-dir>` | A directory that contains a `corpus.jsonl` written by `grab`. Required. |
+| `--salt-file <path>` | The path to the salt file. The default is `.trace-grab/salt`. |
 
-Exit code is `0` when the value never appears in plaintext, and `1` when it does — suitable
-for gating CI on a known-sensitive value.
+The exit code is `0` when the value never appears in plaintext. The exit code is `1` when it does. You can use this code to gate CI on a known-sensitive value.
+
+Example output when the value does not appear in plaintext:
 
 ```txt
 $ trace-grab check --value "alice@corp.com" ./corpus
 appears as TOK_88b0e13a5d in 14 records; never appears in plaintext
 ```
+
+Example output when the value appears in plaintext:
 
 ```txt
 $ trace-grab check --value "alice@corp.com" ./corpus
@@ -64,3 +63,36 @@ PLAINTEXT FOUND in 2 records:
   line 41: {"inputs":{"actor":"alice@corp.com", ...
   line 302: {"outputs":{"notified":"alice@corp.com", ...
 ```
+
+## LangSmith API source
+
+This section applies when you use `--from langsmith-api`. To learn how to use this source, see [Sources](/trace-grab/sources).
+
+### Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `LANGSMITH_API_KEY` | The LangSmith API key. trace-grab reads it only from the environment. |
+| `LANGSMITH_ENDPOINT` | Optional. Replaces the base URL `https://api.smith.langchain.com`. |
+| `LANGSMITH_WORKSPACE_ID` | Optional. trace-grab sends it as `x-tenant-id` when an organization-scoped key needs it. |
+
+### Requests
+
+trace-grab makes only these requests. It sends them to the configured LangSmith base URL with plain `fetch`. It refuses cross-origin redirects.
+
+- `GET /api/v1/sessions?name=<project>` resolves the project name to its LangSmith session ID.
+- `POST /api/v1/runs/query` fetches native run records with cursor pagination.
+
+trace-grab applies `--since` and `--until` locally, after the pull, to whole traces. It does not use a server-side filter for each run. Such a filter could return a child and omit its root. The trace would then be silently truncated.
+
+### Checkpoint
+
+After every page, trace-grab writes its progress under `.trace-grab/langsmith-api/` (mode `0600`). A key derived in memory from `LANGSMITH_API_KEY` encrypts the native run payloads in the checkpoint. To resume, you need the original key. trace-grab deletes the checkpoint only after it writes the sanitized bundle.
+
+### Credential handling
+
+- For rate-limit responses, trace-grab honors `Retry-After`. Otherwise it uses bounded exponential backoff.
+- trace-grab never stores `LANGSMITH_API_KEY`.
+- trace-grab excludes the key from the local reverse keymap.
+- trace-grab blocks the key from pass-verbatim and revealed bundle fields.
+- trace-grab redacts the key from API error bodies before they reach the terminal.

@@ -55,7 +55,6 @@
           {
             "group": "Guides",
             "pages": [
-              "trace-grab/policy",
               "trace-grab/sources",
               "trace-grab/transfer"
             ]
@@ -63,6 +62,7 @@
           {
             "group": "Reference",
             "pages": [
+              "trace-grab/policy",
               "trace-grab/reference/cli",
               "trace-grab/reference/schema"
             ]
