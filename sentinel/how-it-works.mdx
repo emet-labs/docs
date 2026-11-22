@@ -1,0 +1,132 @@
+---
+title: "How Sentinel works"
+description: "How evidence moves from your services to a Verdict, and why Sentinel reports Inconclusive when evidence is missing."
+---
+
+This page explains how Sentinel turns activity in your services into a Verdict. It also explains why Sentinel sometimes refuses to give a conclusion.
+
+## The path of evidence
+
+Evidence moves through five parts.
+
+1. A **Probe** runs inside or next to one Monitored Application. It reports what the application does.
+2. The **Adapter** converts the Probe data into Sentinel's canonical Event model.
+3. The **Verification Core** compares Events with Specifications. It produces Verdicts.
+4. The **store** keeps Events, completeness evidence, Specifications, and Verdicts. The store is Postgres.
+5. The **dashboard** shows Verdicts, Traces, sources, Candidates, and Specifications.
+
+The control plane that wires these parts together is called periphery. It is one HTTP process. It receives Probe data, stores it, and runs the Verification Core.
+
+A return path exists. Sentinel sends each Probe an Event Filter. The Event Filter lists the Event kinds and attributes that the active Specifications can depend on. Sentinel can also send Verdicts back to a Probe.
+
+## Events
+
+An Event is one thing that happened at one instant in one Monitored Application. A request and its completion are two Events.
+
+A Probe creates an Event when an OpenTelemetry span ends. The span name becomes the Event kind. The span attributes become the Event attributes.
+
+Each Event has two times:
+
+- **Occurrence Time** is when the Event happened. The Monitored Application supplies it.
+- **Observation Time** is when Sentinel first saw the Event. Sentinel's own clock supplies it.
+
+Sentinel does not compare these two times unless it knows the clock relationship.
+
+## Causality and Traces
+
+Sentinel does not order Events by timestamp. It orders them by cause.
+
+Each Event can name a causal parent. A Probe puts the parent Event id on the calls that leave a service. The next service reads the id and uses it as the parent of its own Event.
+
+A Trace is the graph of Events that cause each other. Two Events with no causal path between them are Concurrent. Sentinel does not invent an order for Concurrent Events.
+
+A Trace is Partial when a causal predecessor is absent. A Partial Trace is missing evidence. It is not a pass.
+
+## Sequence Epochs and completeness
+
+A Probe must also say what it did not send. If a Probe stays silent, Sentinel must know whether nothing happened or something was lost.
+
+Each Probe gives every Event a slot. A slot is a pair: a Sequence Epoch and a sequence number. The Sequence Epoch is a number that increases when the source restarts. It also increases after the source declares a close. The sequence number increases with each Event.
+
+At a fixed interval, the Probe sends a completeness heartbeat. The heartbeat says two things:
+
+- `last_emitted` is the highest sequence number that the Probe allocated.
+- `complete_through` is the highest number below which every Event reached Sentinel.
+
+A failed or in-flight export holds `complete_through` back. A gap stays visible.
+
+The Watermark is the point before which Sentinel expects the evidence of a source to be complete. A Watermark limits completeness. It does not prove causality.
+
+A source that stays silent past its Liveness Floor stops covering new triggers. By default, the floor is 60 seconds for an active source and 15 minutes for a source that declared itself idle. You can change both floors. See [Installation](/sentinel/installation#configure-the-control-plane).
+
+## Evidence Coverage
+
+Evidence Coverage is how much of the required evidence Sentinel can establish. It includes the required sources, the observed sources, sequence gaps, and causal edges.
+
+Coverage decides whether a conclusion is possible. If coverage is open, Sentinel cannot settle a `Satisfy`. It reports `Inconclusive` and names the reason.
+
+One exception exists. A `Violate` that rests on a witnessed Event from an anchor-tier source cannot be undone by more evidence. Sentinel can settle that `Violate` before coverage closes.
+
+## Source Tier
+
+The Source Tier says how far Sentinel can trust the origin of an Event.
+
+- **Anchor-tier** sources are sources that the Monitored Application cannot suppress or forge. Examples are a gateway, a permission system, and an identity system.
+- **Contributing-tier** sources run inside the Monitored Application.
+
+A Probe cannot choose its own tier. You assign the tier in the source registry. A Verdict is only as trustworthy as the tier of the sources it rests on. For the registry file, see [Connect a Probe](/sentinel/connect-a-probe).
+
+## Data Class
+
+Every Event declares a Data Class at ingest. The Data Class is `monitored-Tenant` or `Corpus`. There is no default.
+
+- **monitored-Tenant** Events come from your own deployment. Verdicts rest on these Events.
+- **Corpus** Events come from donated, sanitized bundles. Sentinel mines these Events for candidate Specifications. No Verdict rests on them.
+
+The Traces page requires you to pick one class. It never combines the two.
+
+## Specifications, Patterns, and Shadow
+
+You do not write a Specification in free text. You choose a Pattern from the Catalogue and fill in its parameters. A Pattern is a template of temporal shape, such as "this Event never happens unless that Event came first."
+
+A Candidate is a proposed Specification. Sentinel replays a Candidate over recorded Traces and reports what the Candidate would have found. A person reviews the Candidate. A Promotion turns it into a Specification.
+
+After Promotion, a Specification runs in Shadow. Sentinel evaluates it against live Events and records Verdicts. It notifies no one and blocks nothing.
+
+<Warning>
+Sentinel is detect-only today. No blocking enforcement exists in the running product. The data model defines a decision request for a narrow class of Specifications. The control plane does not serve that route.
+</Warning>
+
+## Reading a Verdict
+
+A Verdict judges one Specification against one Binding. A Binding is one set of concrete values, for example one order id.
+
+The outcome is one of three values:
+
+| Outcome | Meaning |
+| --- | --- |
+| `Satisfy` | The evidence shows the Specification held, and Evidence Coverage closed. |
+| `Violate` | The evidence shows the Specification broke. |
+| `Inconclusive` | The evidence is missing, late, or ambiguous. The Verdict names what is missing. |
+
+The authority is one of two values:
+
+| Authority | Meaning |
+| --- | --- |
+| `Provisional` | Later evidence could still change the conclusion. |
+| `Authoritative` | The conclusion is settled. More evidence cannot change it. |
+
+A Verdict stays `Provisional` until the activation barrier clears. The barrier clears after Sentinel publishes the Event Filter and each required source acknowledges it in a heartbeat.
+
+When a Specification is never triggered, Sentinel reports no obligation. No obligation is not a `Satisfy`.
+
+The Assurance Envelope comes with every Verdict. It records the Specification version, the Filter epochs, the Watermarks, the required sources, the gaps, and the uncertainty. A Verdict never appears without its Assurance Envelope.
+
+## What Sentinel cannot do yet
+
+- It cannot block an action.
+- It cannot authenticate a Probe. The `x-sentinel-source-handle` header names a source. It does not prove who sent the data.
+- It has no HTTP route to register a source.
+- It does not separate tenants.
+
+For the exact terms, see [Terminology](/sentinel/terminology).

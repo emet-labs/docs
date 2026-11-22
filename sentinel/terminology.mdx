@@ -1,0 +1,87 @@
+---
+title: "Terminology"
+description: "Definitions of every Sentinel term that you meet, with the words to avoid."
+---
+
+Sentinel uses one word for one meaning. This page defines each term. The **Avoid** column lists words that mean something else in Sentinel. Do not use them for these concepts.
+
+Product terms are capitalized. Code, flags, and field names are in code font.
+
+## Observation
+
+| Term | Meaning | Avoid |
+| --- | --- | --- |
+| Sentinel | The product and its control plane. It takes in Events, evaluates Specifications, and produces Verdicts. | the monitor, the server, the engine |
+| Probe | A small library inside or next to one Monitored Application. It reports what the application does. | harness, agent, sidecar, collector |
+| Adapter | A component that converts an outside telemetry format into Sentinel's Event model. OpenTelemetry is one input format. | receiver, importer, ingester |
+| Monitored Application | One deployable unit under verification. It can be an AI agent, a web server, or a database. | service, target, host |
+| Event | One thing that happened at one instant in one Monitored Application. A request and its completion are two Events. | span, record, message, log line |
+| Event kind | The name of an Event type. A Probe takes it from the OpenTelemetry span name. | |
+| Trace | The graph of Events that are related by cause. | call tree, session, span tree |
+| Span | A derived view over two matched Events. It shows the interval between them. Sentinel never treats a span as a primitive. | |
+| Concurrent | Two Events with no causal path between them. They have no trusted relative order. | parallel, simultaneous, unordered |
+| Occurrence Time | When an Event happened, by the clock of the Monitored Application. | timestamp, event time |
+| Observation Time | When Sentinel first saw an Event, by Sentinel's clock. | ingest time, arrival time |
+| Partial Trace | A Trace in which a causal predecessor is absent. It is missing evidence and never a pass. | |
+
+## Evidence and completeness
+
+| Term | Meaning | Avoid |
+| --- | --- | --- |
+| Sequence Epoch | A number that identifies one run of a source. It increases on restart and after a declared close. An Event slot is a Sequence Epoch and a sequence number. | |
+| Watermark | The point before which Sentinel expects the evidence of one source to be complete. It limits completeness. It does not prove causality. | cutoff, horizon |
+| Liveness Floor | The longest time that a source can stay silent and still count as reporting. The defaults are 60 seconds for an active source and 15 minutes for an idle source. | timeout, TTL |
+| Evidence Coverage | How much of the required evidence Sentinel can establish. It decides whether a conclusion is answerable. | instrumentation quality, completeness |
+| Source Tier | The assurance class of an Event's origin: anchor-tier or contributing-tier. | trust level, probe type |
+| Anchor-tier | A source that the Monitored Application cannot suppress or forge. Examples are a gateway or an identity system. | |
+| Contributing-tier | A source inside the Monitored Application. | |
+| Data Class | The class of an Event at ingest: monitored-Tenant or Corpus. | data type, sensitivity |
+| Corpus | A bundle of donated, sanitized `trace-corpus-v1` records. Sentinel mines it for Candidates. No Verdict rests on it. | dataset, dump, training data |
+| Source registry | The JSON file that maps each source handle to an application id, a source id, a Source Tier, and capabilities. | |
+| Source handle | The value of the `x-sentinel-source-handle` header. A Probe sends it with every request. | |
+| Event Filter | The list of Event kinds and attributes that the active Specifications can depend on. Sentinel sends it to Probes in numbered epochs. | sampler, selector, subscription |
+| Filter epoch | The number of one published Event Filter. A Probe reports the epoch that it acknowledged. | |
+
+## Judgement
+
+| Term | Meaning | Avoid |
+| --- | --- | --- |
+| Specification | A statement of what a deployment must or must not do. Sentinel can evaluate it against a Trace. | rule, policy, constraint, invariant, check |
+| Pattern | A template of temporal shape, with parameters. A Specification instantiates a Pattern. | template, rule type |
+| Catalogue | The set of Patterns that Sentinel supports. It is the only way to author a Specification. | library, registry, ruleset |
+| Scope | The extent over which a Pattern is evaluated. | window, context, range |
+| Binding | One assignment of the free variables of a Specification to concrete values. Sentinel evaluates a Specification once for each Binding. | instance, parameter set |
+| Intent Artifact | A document that states what a system should do. Examples are a system prompt, a tool schema, or a runbook. | requirements, docs, prompt |
+| Candidate | A proposed Pattern instance that is not yet a Specification. It carries its source and its replay evidence. | draft, suggestion |
+| Promotion | The reviewed act that turns a Candidate into a Specification. It is never automatic. | approval, activation, publish |
+| Shadow | The state in which Sentinel evaluates a Specification against live Events and records Verdicts. It notifies no one and enforces nothing. | dry run, test mode, staging |
+| Topology | A declared expectation of the shape of a deployment. Sentinel checks it as a Specification. | workflow, DAG definition |
+| Verification Core | The component that advances Events against Specifications to produce Verdicts. | engine, monitor, checker, runtime |
+| Frontier | The set of latest Events for each causal source in the part of a Trace that Sentinel has seen. | cut, global state |
+
+## Verdicts
+
+| Term | Meaning | Avoid |
+| --- | --- | --- |
+| Verdict | Sentinel's judgement of one Specification against one Binding at one point in time. | result, status, alert, finding |
+| `Satisfy` | The evidence shows the Specification held, and Evidence Coverage closed. | pass |
+| `Violate` | The evidence shows the Specification broke. | |
+| `Inconclusive` | The Verdict has not settled. It always names a reason. | unknown, pending, indeterminate |
+| `Provisional` | Later evidence could still change the Verdict. | |
+| `Authoritative` | The Verdict is settled. More evidence cannot change it. | |
+| No obligation | The Specification was never triggered. It is not a `Satisfy`. | |
+| Violation | A Verdict that settled against the Specification. It does not change afterward. | failure, breach, error |
+| Amendment | A new record that Sentinel creates when late or corrected evidence changes what it can conclude. The first Verdict stays auditable. | |
+| Assurance Envelope | The evidence conditions that come with a Verdict: versions, Filter epochs, Watermarks, required sources, gaps, and uncertainty. | |
+| Activation barrier | The condition that must clear before a Verdict can become `Authoritative`. Sentinel stamps it when it publishes an Event Filter. | |
+
+## Advanced terms
+
+The first two terms describe the data model for blocking decisions. The running product does not block actions.
+
+| Term | Meaning | Avoid |
+| --- | --- | --- |
+| Enforcement Latency Budget | The time that a Specification allows for its own blocking decision. | timeout, deadline, SLA |
+| Transport Budget | The remaining time that a decision request carries at each hop. | budget, remaining time |
+| Cost Class | The evaluation tier and the expected cost for each Event of a Specification. | complexity, weight |
+| Subsumption | The relation between a Candidate and a deployed Specification. Every Trace on which the Candidate settles `Violate` is also a Trace on which the Specification does. | implication, duplicate |
