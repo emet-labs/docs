@@ -1,0 +1,25 @@
+sentinel/connect-a-probe.mdx
+  s_b3adca4d965542::t_79d6f7ace4ebb5 1-177
+sentinel/installation.mdx
+  s_b3adca4d965542::t_cac5c47d66999e 3,6-175
+sentinel/quickstart.mdx
+  s_b3adca4d965542::t_57f0c6b9046bbc 3,6-119
+sentinel/write-a-specification.mdx
+  s_b3adca4d965542::t_0702849ba5944e 1-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6a290b2c2b547ff2a8536dfdd08a1559636a8800",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
