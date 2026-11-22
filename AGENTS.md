@@ -14,7 +14,7 @@
 
 ## Terminology
 
-- Sentinel pages use the terms of `sentinel/CONTEXT.md` (the Sentinel repository glossary): Specification, Verdict, Event, Trace, Pattern, Evidence Coverage, Watermark, Source Tier, Data Class. Do not use "rule", "policy", or "result" for these concepts.
+- Sentinel pages use the terms of `CONTEXT.md` in the Sentinel repository (the glossary): Specification, Verdict, Event, Trace, Pattern, Evidence Coverage, Watermark, Source Tier, Data Class. Do not use "rule", "policy", or "result" for these concepts.
 - trace-grab pages keep the names that the tool uses: `policy`, `report.md`, `corpus`, `record`, `span`, `disposition`. These are technical names. Do not rename them.
 - Use one word for one meaning: "tokenize" (not "mask" or "redact"), "bundle" (the output directory), "grab" (the command), "pass unchanged" (a field that trace-grab does not change).
 - Writing standards: ASD-STE100 Simplified Technical English (procedure sentences of at most 20 words, other sentences of at most 25 words, active voice, no semicolons, no contractions) and the Diataxis framework (each page is one of tutorial, how-to guide, reference, or explanation).
