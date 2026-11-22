@@ -30,7 +30,7 @@ You can also use any other method that your organization prefers. The corpus is 
 
 Deny-by-default means that plaintext reaches the bundle only through a field that a `reveal` rule names. A `reveal` rule with a spelling error or a scope that is too wide fails silently. The run then looks correct.
 
-If you find a leak after you send a corpus, tell us. We do these steps:
+If a leak is found after you send a corpus, we do these steps:
 
 1. **Quarantine on detection.** We move the affected batch out of the analysis path immediately. We make no new derived artifacts from it while it is under review.
 2. **Notify within one business day.** We tell you what we found and where. We name the field, the disposition rule that let the value through, and the number of records.
