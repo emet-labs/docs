@@ -55,9 +55,20 @@
             ]
           },
           {
+            "group": "Interface",
+            "pages": [
+              "sentinel/dashboard"
+            ]
+          },
+          {
             "group": "Reference",
             "pages": [
               "sentinel/reference/api",
+              "sentinel/reference/patterns",
+              "sentinel/reference/candidates",
+              "sentinel/reference/rollout",
+              "sentinel/reference/decisions",
+              "sentinel/reference/cold-path",
               "sentinel/multi-tenant-setup"
             ]
           }

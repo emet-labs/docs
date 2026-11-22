@@ -333,3 +333,34 @@ These routes serve the [Quickstart](/sentinel/quickstart). They work with the in
 | 503 | `store_unavailable`, `reconstructing`, `reconstruction_failed`, `store_not_ready` |
 
 `store_unavailable` is a 503 on purpose. OTLP exporters retry 503 and do not retry 500. A retryable store fault is therefore a 503.
+
+## Example request sequence
+
+The sample detection path over the in-memory store, with a recorded SagaShop capture from the Sentinel repository:
+
+```bash
+# 1. Liveness and readiness.
+curl -sS http://127.0.0.1:8080/healthz
+curl -sS http://127.0.0.1:8080/readyz
+
+# 2. Ingest capture evidence.
+curl -sS -X POST http://127.0.0.1:8080/v1/evidence/capture-envelope \
+  -H 'content-type: application/json' \
+  --data-binary @testdata/sagashop/ts-happy.json
+
+# 3. Publish the sample filter at a pinned observation time.
+curl -sS -X POST http://127.0.0.1:8080/v1/filters/bootstrap-cat1 \
+  -H 'content-type: application/json' \
+  -d '{"observed_at": {"sentinel_clock_id": "sentinel", "nanoseconds": 1700000000000}}'
+
+# 4. Evaluate and capture the verdict id from the response.
+curl -sS -X POST http://127.0.0.1:8080/v1/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"specification_id": "sagashop.p4.ship-requires-prior-charge"}'
+
+# 5. Read the persisted verdict back.
+curl -sS http://127.0.0.1:8080/v1/verdicts/<verdict-id>
+```
+
+The expected result on the happy-path fixture is a `Provisional` verdict: the honest signal
+that the sample bootstrap runs in warming and shadow rather than at authoritative strength.

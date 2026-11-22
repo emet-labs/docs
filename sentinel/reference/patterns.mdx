@@ -1,0 +1,425 @@
+---
+title: "Pattern catalogue"
+description: "The temporal patterns you can instantiate as Sentinel specifications, their parameters, and their evidence requirements."
+---
+
+Sentinel specifications are instantiated from a catalogue of patterns. Each pattern is a
+reusable temporal property with a fixed parameter schema: you bind its parameters to your own
+event kinds and attribute keys, bind its evidence roles to your deployed sources, and the
+result compiles to a monitor and an event filter.
+
+The catalogue currently holds four patterns:
+
+| ID | Pattern | Shape | What it checks |
+| --- | --- | --- | --- |
+| `precedence.approval` | Causal precedence with approval binding | Precedence | An event never occurs unless a qualifying event for the same binding lies in its causal past. |
+| `provenance.taint` | Causal provenance with untrusted-content taint | Reachability | An event never occurs when an event marking untrusted content for the same binding lies in its causal past. |
+| `absence.after-until` | Absence between after and until | Absence | A veto event never occurs inside the open interval `(after, until]` for the same binding. |
+| `aggregation.count-within` | Count within sequence lookback | Aggregation | At a trigger event, the count of matching member events inside a sequence lookback for the same binding stays strictly below a threshold. |
+
+`precedence.approval`, `provenance.taint`, and `absence.after-until` evaluate on the hot
+path with an event-local scope: each obligation is raised and settled at a single trigger
+event, over that event's causal past. `aggregation.count-within` raises its obligation the
+same way, but the count is answered on the [cold path](/sentinel/reference/cold-path), one
+fact query per binding.
+
+## precedence.approval
+
+Formula: `AG(trigger -> EP(requirement))`.
+
+Use this pattern when an action must be causally preceded by an authorization for the same
+unit of work. Typical uses: a mutation requires a prior blast-radius approval, a trade fill
+requires a prior margin reservation, a request is processed only after a policy engine
+evaluated an allow for it.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. Each binding gets its own slice and its own verdict. |
+| `trigger` | selector | Events that create the obligation. One obligation per matching event per binding. |
+| `requirement` | selector | Events that discharge the obligation. A matching event must lie in the trigger's causal past. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `requirement_source` | Anchor | Causal edges, completeness signals |
+| `trigger_source` | Contributing | None |
+
+A violation here rests on the *absence* of a requirement event, so the requirement source
+must sit at anchor tier. When no required source sits at anchor tier, Sentinel demotes the
+violation to `Inconclusive(prefix)` instead of settling it. The trigger witnesses itself, so
+a contributing-tier trigger source suffices.
+
+### How a violation settles
+
+A violation is an absence claim: the trigger occurred and no requirement lies in its causal
+past. Sentinel settles that claim as an authoritative `Violate` on one of two mutually
+exclusive bases, both carried on the verdict's settlement basis:
+
+- **Decisive events**: witness events settle the absence directly. The basis names the
+  witnesses, the invariance-proof rule, and every open limitation.
+- **Watermark-anchored silence**: a required anchor-tier requirement source is healthy,
+  watermark-complete through the binding's window, and emitted nothing for the binding.
+  That silence is affirmative evidence that no requirement event exists, so Sentinel
+  settles the violation on it. The basis names each silent anchor source and the watermark
+  its silence is complete through. No source-tier gap accompanies this verdict.
+
+Silence anchors a violation only when it is provably exhaustive. Weaker silence still
+refuses to settle:
+
+| Condition | Outcome |
+| --- | --- |
+| A required source is missing, unhealthy, or its watermarks have not caught up | `Inconclusive(prefix)` with a source-tier gap |
+| No required source sits at anchor tier | `Inconclusive(prefix)` |
+| The specification needs a presence that silence cannot confirm | `Inconclusive(anchor_silence)` |
+
+`anchor_silence` is a distinct inconclusive reason (wire value `ANCHOR_SILENCE`) for the
+residual case where the anchor source is complete, healthy, and silent, but silence cannot
+prove the presence the specification demands. More events will not settle it, so it is not
+prefix uncertainty, and it is never reported as a violation.
+
+## provenance.taint
+
+Formula: `AG(action -> !EP(untrusted_content))`.
+
+Use this pattern when an action must not be influenced by untrusted content: no event
+matching the untrusted-content selector may lie in the action's causal past for the same
+binding. Typical uses: an agent must not send an email, execute a tool call, or commit a
+change after reading content from an untrusted origin in the same workflow.
+
+The untrusted-content selector matches a marker event that your instrumentation emits when
+untrusted content is ingested. The taint predicate is an attribute on that marker event, not
+an inspection of raw content.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The question is not whether untrusted content was read anywhere, but whether it reached this binding's action. |
+| `action` | selector | Events whose provenance is constrained. One obligation per matching event per binding. |
+| `untrusted_content` | selector | Events marking the ingestion of untrusted content. A match falsifies the property when it lies in an action's causal past. It may match freely elsewhere in the trace. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `action_source` | Anchor | Causal edges |
+| `content_source` | Anchor | Causal edges, completeness signals |
+
+Both roles demand anchor tier, and the requirement is stricter than `precedence.approval`'s
+on purpose. A `Satisfy` here is a claim about the action's own ancestry: that nothing
+untrusted reached it. A source inside the monitored application declaring its own inputs
+clean is the suppression failure the tier model exists to catch.
+
+### How verdicts settle
+
+For each action event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| An untrusted-content event lies in the action's causal past, witnessed at anchor tier | `Violate` |
+| An untrusted-content event lies in the action's causal past, witnessed at contributing tier only | `Inconclusive(prefix)` |
+| An untrusted-content event is concurrent with the action | `Inconclusive(observational)` |
+| No such event either way, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+Presence is tested before tier, and the tier test can never reach `Satisfy`. A genuine
+violation witnessed only at contributing tier downgrades to `Inconclusive` rather than
+silently passing. Evidence that is too weak to convict is never reported as success.
+
+### Current status
+
+`provenance.taint` evaluates end to end. An instantiation lowers to a live monitor, and the
+evaluator settles a verdict per binding under the decision table above, exactly as it does
+for `precedence.approval`. Candidate replay evaluates taint candidates over the corpus and
+reports a would-fire rate for them. Enforcement decisions remain detect-only for this
+pattern: a taint specification produces verdicts but does not gate pending actions.
+
+## absence.after-until
+
+Formula: `AG(until -> !EP_(after,until](veto))`.
+
+Use this pattern when a forbidden event must not occur between an opening event and a closing
+action for the same unit of work. Typical uses: no approval revocation between an approval
+and the mutation it authorizes, no payment capture once a carrier has rejected the shipment,
+no threat-score elevation for a principal inside a request window.
+
+The interval is causal, not wall-clock. It opens when an event matching the `after` selector
+lies in the causal past of an event matching `until`, and it closes at that `until` event,
+which is also the event that raises the obligation. The interval is open at `after` and
+closed at `until`: a veto at the `until` event itself falsifies the property, while the
+opening `after` event does not.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The question is whether a veto reached this binding's open interval, not whether a veto occurred anywhere. |
+| `after` | selector | Events that open the interval. |
+| `until` | selector | Events that close the interval and raise the absence obligation. One obligation per matching event per binding. |
+| `veto` | selector | Events prohibited inside `(after, until]`. A match falsifies the property when it lies in that interval. It may match freely outside it, and usually does. |
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `until_source` | Anchor | Causal edges |
+| `veto_source` | Anchor | Causal edges, completeness signals |
+| `after_source` | Contributing | Completeness signals |
+
+The `until` source is where a `Satisfy` is claimed about an interval that must contain no
+veto, so it demands anchor tier: a source inside the monitored application declaring its own
+interval clean is the suppression failure the tier model exists to catch. A violation rests
+on a veto's presence inside the interval, so the veto source demands anchor tier too, plus
+completeness signals because a `Satisfy` is an absence claim about that source. The opening
+delimiter witnesses itself, so a contributing-tier `after` source suffices. It still needs
+completeness signals: a settled interval that never opened is reported as no obligation, and
+without a watermark on the `after` source that outcome would be silent.
+
+### How verdicts settle
+
+For each `until` event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| A veto event lies inside `(after, until]`, witnessed at anchor tier | `Violate` |
+| A veto event lies inside `(after, until]`, witnessed at contributing tier only | `Inconclusive(prefix)` |
+| An `after` or veto event is concurrent with the `until` event | `Inconclusive(observational)` |
+| No `after` event reaches the `until` event, and evidence coverage is closed | No obligation |
+| No `after` event reaches the `until` event, coverage still open | `Inconclusive(prefix)` |
+| The interval opened, no veto lies inside it, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+As with `provenance.taint`, presence is tested before tier, and the tier test can never reach
+`Satisfy`. A genuine veto witnessed only at contributing tier downgrades to `Inconclusive`
+rather than silently passing.
+
+The no-obligation row is not a pass. An interval that never opened has nothing to discharge,
+so that `until` event contributes nothing to the binding's verdict, and it is never rendered
+as `Satisfy`. A binding whose every `until` event settles as no obligation produces no
+verdict at all.
+
+### Example
+
+This instantiation forbids an approval revocation between an approval and the mutation it
+authorizes:
+
+```rust
+use std::collections::BTreeMap;
+
+use sentinel_compile::catalogue::{
+    instantiate, EvidenceBinding, ParameterValue, PatternId, SelectorValue,
+};
+
+let arguments = BTreeMap::from([
+    (
+        "binding_attribute".to_owned(),
+        ParameterValue::AttributeKey("example.change.id".to_owned()),
+    ),
+    (
+        "after".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.approval.granted")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "until".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.mutation.applied")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "veto".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.approval.revoked")?,
+            BTreeMap::new(),
+        )),
+    ),
+]);
+
+let evidence = BTreeMap::from([
+    (
+        "until_source".to_owned(),
+        EvidenceBinding::new(config_service, SourceTier::Anchor, causal_edges),
+    ),
+    (
+        "veto_source".to_owned(),
+        EvidenceBinding::new(approval_service, SourceTier::Anchor, full_capabilities),
+    ),
+    (
+        "after_source".to_owned(),
+        EvidenceBinding::new(approval_service, SourceTier::Contributing, completeness_only),
+    ),
+]);
+
+let instance = instantiate(
+    PatternId::AbsenceAfterUntil,
+    identity,
+    contract,
+    arguments,
+    evidence,
+)?;
+```
+
+### Current status
+
+`absence.after-until` evaluates end to end on the hot path, with zero cold-path fact
+requests per verdict. Candidate proposals can target the pattern, and candidate replay
+evaluates absence candidates over the corpus the same way it does for the other two
+patterns. Enforcement decisions remain detect-only: an absence specification produces
+verdicts but does not gate pending actions.
+
+## aggregation.count-within
+
+Formula: `AG(trigger -> count_within(lookback, member) < threshold)`.
+
+Use this pattern for per-binding rate caps: at each trigger event, the number of member
+events inside a sequence lookback must stay strictly below a threshold. Typical uses: a
+privileged action is allowed only while fewer than *n* similar actions sit in its recent
+causal history, or an assessment event must confirm that retries for the same workflow
+stayed under a cap.
+
+This is the catalogue's first cold-tier pattern. The lookback the count is drawn from is a
+retained window of causal evidence rather than the slice the hot path already holds, so the
+hot path raises one obligation per trigger event, declares one fact query per binding, and
+reads the answer back from a [cold-path guard](/sentinel/reference/cold-path). Each verdict
+costs one fact request.
+
+### Parameters
+
+| Parameter | Kind | Meaning |
+| --- | --- | --- |
+| `binding_attribute` | attribute key | The event attribute whose value names a binding. The cap is per binding, not a global count across principals. |
+| `trigger` | selector | Events that raise the aggregation obligation. One obligation per matching event per binding. |
+| `member` | selector | Events counted inside the lookback. Members may match freely elsewhere; a clean under-threshold deployment emits members without ever violating. |
+| `lookback` | sequence lookback bound | How many sequence positions of causal evidence to include when counting members. |
+| `threshold` | count threshold | Exclusive upper bound on the member count inside the lookback. |
+
+Two rules shape these parameters:
+
+- The lookback counts **sequence positions per source**, not wall-clock time. Duration
+  windows in seconds, minutes, hours, or days are not supported, and a duration-shaped
+  proposal is refused rather than silently reinterpreted.
+- The threshold is **exclusive**: a complete lookback with `count < threshold` holds, and
+  `count >= threshold` fails the guard. An empty complete lookback counts zero members, so a
+  binding that never emitted a member still satisfies.
+
+A lookback of `0` or a threshold of `0` is refused at proposal admission. A zero threshold
+would forbid the trigger outright, and a zero lookback asks about an empty window.
+
+### Evidence roles
+
+| Role | Minimum tier | Required capabilities |
+| --- | --- | --- |
+| `trigger_source` | Anchor | Causal edges |
+| `member_source` | Anchor | Causal edges, completeness signals |
+
+The trigger source demands anchor tier for the same reason `provenance.taint`'s action
+source does: a `Satisfy` here is a claim about the trigger's own recent history, and a
+contributing-tier source declaring its own rate cap clean is the suppression failure the
+tier model exists to catch. The member source needs completeness signals because an
+incomplete or reaped lookback must never count as under threshold.
+
+### How verdicts settle
+
+For each trigger event, Sentinel applies an ordered decision table. First match wins:
+
+| Condition | Outcome |
+| --- | --- |
+| The evidence gate is closed | `Inconclusive(prefix)` |
+| A complete lookback met or exceeded the threshold | `Inconclusive(epistemic)`, carrying the over-threshold finding |
+| The guard refused: no answer will ever exist for the asked lookback | `Inconclusive(epistemic)` |
+| No cold guard is bound, so no count was ever asked for | `Inconclusive(epistemic)` |
+| A guard is bound and has not settled | `Inconclusive(prefix)` |
+| Complete lookback under threshold, and evidence coverage is closed | `Satisfy` |
+| Otherwise | `Inconclusive(prefix)` |
+
+Missing evidence is never a pass. An unasked count and an outstanding count are distinct
+non-answers, and both settle short of `Satisfy`.
+
+An over-threshold count settles as authoritative `Inconclusive`, never as `Violate`. This
+is the hot/cold composition boundary, not caution about the count: a cold conclusion cannot
+mint a violation until the cold-witness trust boundary lands. The verdict carries an
+epistemic detail naming the over-threshold finding, so triage can distinguish a breached cap
+from ordinary uncertainty.
+
+### Current status
+
+`aggregation.count-within` evaluates end to end: instantiation lowers to an aggregate
+monitor, the derived count-within guard is bound automatically, and the evaluator settles
+one verdict per binding under the table above. Sequence lookback is the only window shape.
+Wall-clock windows, sum and distinct-count aggregations, and violations minted from cold
+failures are not yet supported.
+
+## Instantiating a pattern
+
+Bind every declared parameter and every evidence role, then call `instantiate`. This example
+instantiates `provenance.taint` for an agent that sends email after ingesting content:
+
+```rust
+use std::collections::BTreeMap;
+
+use sentinel_compile::catalogue::{
+    instantiate, EvidenceBinding, ParameterValue, PatternId, SelectorValue,
+};
+
+let arguments = BTreeMap::from([
+    (
+        "binding_attribute".to_owned(),
+        ParameterValue::AttributeKey("example.request.id".to_owned()),
+    ),
+    (
+        "action".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.email.sent")?,
+            BTreeMap::new(),
+        )),
+    ),
+    (
+        "untrusted_content".to_owned(),
+        ParameterValue::Selector(SelectorValue::new(
+            EventKind::new("example.content.ingested")?,
+            BTreeMap::from([(
+                "example.content.trust".to_owned(),
+                AttributeValue::String("untrusted".to_owned()),
+            )]),
+        )),
+    ),
+]);
+
+let evidence = BTreeMap::from([
+    (
+        "action_source".to_owned(),
+        EvidenceBinding::new(mail_gateway, SourceTier::Anchor, capabilities.clone()),
+    ),
+    (
+        "content_source".to_owned(),
+        EvidenceBinding::new(content_broker, SourceTier::Anchor, capabilities),
+    ),
+]);
+
+let instance = instantiate(
+    PatternId::ProvenanceTaint,
+    identity,
+    contract,
+    arguments,
+    evidence,
+)?;
+```
+
+Integer-valued parameters bind the same way. An `aggregation.count-within` instantiation
+passes `ParameterValue::SequenceLookbackBound(64)` for `lookback` and
+`ParameterValue::CountThreshold(3)` for `threshold` alongside its attribute-key and
+selector arguments.
+
+A missing or mistyped parameter is an error: the instantiation is refused. A source placed
+below the tier its role demands is a warning, because the required tier is a specification
+property while the placement is a deployment fact. Selector values are checked for shape,
+not for existence: a well-formed attribute key that no producer emits compiles cleanly and
+matches nothing, so validate an instance against settled evidence before promoting it.
