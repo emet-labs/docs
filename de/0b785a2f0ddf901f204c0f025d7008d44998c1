@@ -1,0 +1,21 @@
+trace-grab/threat-model.mdx
+  s_b3adca4d965542::t_639342e30b6904 3,6,10,12-18,20-24,28-30,32-34,38-47,51,53-55,59-61,63,67-76,78,80,82,84,86,88-98,102
+trace-grab/transfer.mdx
+  s_b3adca4d965542::t_be99838c7cc6b8 3,6-20,27,29,31,33,35-38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "de0b785a2f0ddf901f204c0f025d7008d44998c1",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
