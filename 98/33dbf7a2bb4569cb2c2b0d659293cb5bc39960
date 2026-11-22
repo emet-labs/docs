@@ -1,0 +1,29 @@
+index.mdx
+  s_b3adca4d965542::t_2220ed5b00f2c3 6-8,12,15,19,21-22
+sentinel/index.mdx
+  s_b3adca4d965542::t_c79c34e09fdf09 6,8,12,15,18
+sentinel/installation.mdx
+  s_b3adca4d965542::t_bbf9f3db0167aa 3
+sentinel/multi-tenant-setup.mdx
+  s_b3adca4d965542::t_3d1b791f865d7b 3
+sentinel/quickstart.mdx
+  s_b3adca4d965542::t_eaa333c7df882e 3
+sentinel/reference/api.mdx
+  s_b3adca4d965542::t_5c9a03271dc8b1 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9833dbf7a2bb4569cb2c2b0d659293cb5bc39960",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
