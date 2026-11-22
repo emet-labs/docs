@@ -1,6 +1,119 @@
 ---
 title: "Quickstart"
-description: "Start Sentinel and see your first Verdict."
+description: "Run Sentinel on your machine and read your first Verdicts, from recorded evidence and from a live demo."
 ---
 
-Coming soon.
+In this tutorial, you run Sentinel on your machine. You read Verdicts from recorded evidence. Then you run a live demo and watch a Verdict change as evidence arrives.
+
+The tutorial does not connect your own service. To do that, see [Connect a Probe](/sentinel/connect-a-probe).
+
+<Note>
+The recorded walkthrough and the live demo are demonstration tools. They use sample evidence from a test shop. They are not evidence from a real deployment.
+</Note>
+
+## Before you start
+
+You need:
+
+- A checkout of the Sentinel repository. Sentinel does not yet ship as a public package.
+- macOS on Apple silicon, or Linux on arm64. These are the platforms that the project tests.
+- A C build toolchain. On macOS, run `xcode-select --install`.
+
+## 1. Install Devbox
+
+Sentinel builds inside a pinned Devbox environment. Do not use the Rust tools on your host.
+
+Install Devbox from the [Devbox documentation](https://www.jetify.com/devbox/docs/). Then set the tested version in your shell profile:
+
+```sh
+export DEVBOX_USE_VERSION=0.19.0
+```
+
+The Devbox installer is a launcher. This variable makes it run version 0.19.0, the version that the project's CI uses.
+
+## 2. Install the toolchain
+
+From the repository root, run:
+
+```sh
+devbox install
+```
+
+This command reads `devbox.lock` and installs the pinned tools.
+
+## 3. Start the recorded walkthrough
+
+Run:
+
+```sh
+devbox run -- just walkthrough
+```
+
+The first run builds the control plane and the dashboard. It takes some time.
+
+The recipe starts two processes. Periphery listens on `127.0.0.1:8080` with an in-memory store. The dashboard listens on `127.0.0.1:5173`.
+
+Open <http://127.0.0.1:5173/walkthrough>. The page title is **Recorded walkthrough**.
+
+## 4. Run the four scenarios
+
+Each scenario has a **Run scenario** button. Press the buttons in this order and read the result of each.
+
+| Scenario | What you see |
+| --- | --- |
+| Happy path | One `Satisfy` Verdict with authority `Provisional`. |
+| Invalid charge (adversarial flip) | One `Violate` Verdict with authority `Provisional`. |
+| Cancellation (NoObligation) | No Verdicts. The order was cancelled, so no obligation arose. This is not a `Satisfy`. |
+| Missing required source | A refusal. The store holds no evidence from a required source, so Sentinel gives no Verdict. |
+
+Each run resets the store first. The Verdicts of one scenario never carry over to the next.
+
+The authority is `Provisional` in every scenario. The walkthrough does not forge the acknowledgement that a source must send before a Verdict becomes `Authoritative`. For the reason, see [How Sentinel works](/sentinel/how-it-works#reading-a-verdict).
+
+Open the Verdicts page and select a Verdict. The Assurance Envelope shows the sources that the Verdict rests on. A source for which Sentinel recorded nothing appears as an explicit "not recorded" row.
+
+## 5. Stop the walkthrough
+
+Run:
+
+```sh
+devbox run -- just walkthrough-stop
+```
+
+The live demo needs port 8080. Stop the walkthrough before you continue.
+
+## 6. Run the live demo
+
+The live demo runs three small processes. They are an approval service, a broker, and an executor. Each process sends real Events through the TypeScript Probe. An AI agent changes production with or without an approval.
+
+Open an interactive Devbox shell. Then start the demo:
+
+```sh
+devbox shell
+just demo
+```
+
+The demo runs in the foreground. It starts a temporary Postgres database and periphery on `127.0.0.1:8080`. It refuses to start if port 8080 is busy.
+
+Open <http://127.0.0.1:8080/verdicts>. Press Enter in the terminal to run each beat.
+
+| Beat | Verdict that you see |
+| --- | --- |
+| Valid approval | `Satisfy`, `Authoritative` |
+| Wrong target | `Violate`, `Provisional` |
+| Revoked approval | A second Specification reports `Violate`. The first Specification still reports `Satisfy` for the same Binding. |
+| Stop the approval service | `Inconclusive`, `Provisional` |
+
+The last beat shows the main rule of Sentinel. The approval service dies before it sends its Event. The executor still acts. Sentinel does not report a `Satisfy`. It reports `Inconclusive` and names the source that has not delivered. Open the Verdict and read **Uncertainty** in the Assurance Envelope. Then open <http://127.0.0.1:8080/sources>. The approval source shows an open Watermark.
+
+## 7. Stop the demo
+
+Press Ctrl-C in the terminal. The demo stops every process and removes its database. A rerun starts with a new database.
+
+`just` prints `error: interrupted by SIGINT`. This message is expected.
+
+## Next steps
+
+- Read [How Sentinel works](/sentinel/how-it-works) to learn why each Verdict came out as it did.
+- Follow [Installation](/sentinel/installation) to run Sentinel with a persistent database.
+- Follow [Connect a Probe](/sentinel/connect-a-probe) to send Events from your own service.

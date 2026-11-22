@@ -1,0 +1,155 @@
+---
+title: "Write a Specification"
+description: "Propose a Candidate from a Pattern, replay it, review it, promote it, and watch it run in Shadow."
+---
+
+This guide shows how to turn a requirement into a running Specification. You propose a Candidate, check its replay evidence, and promote it. Sentinel then evaluates it in Shadow.
+
+## Before you start
+
+- Periphery runs, and at least one source sends Events. See [Connect a Probe](/sentinel/connect-a-probe).
+- You have a document that states the requirement. It can be a system prompt, a tool schema, a policy, or a runbook. Sentinel calls it an Intent Artifact.
+
+<Warning>
+Sentinel is detect-only. A promoted Specification runs in Shadow. It records Verdicts. It notifies no one and blocks nothing.
+</Warning>
+
+## Choose a Pattern
+
+You cannot write a Specification in free text. You fill in a Pattern from the Catalogue. List the Patterns with the dashboard page **Pattern catalogue** (`/patterns`) or with `GET /v1/patterns`.
+
+The Catalogue has five Patterns.
+
+| Pattern | Meaning | Served today |
+| --- | --- | --- |
+| `precedence.approval` | An Event never occurs unless a qualifying Event came first. | Yes |
+| `absence.after-until` | A named Event never occurs inside an interval that two Events delimit. | Yes |
+| `existence.before-scope-close` | A named Event occurs at least once before a Scope closes. | No |
+| `provenance.taint` | An Event never occurs when content from an untrusted source influenced it. | No |
+| `aggregation.count-within` | The number of matching Events in a sequence lookback stays below a threshold. | No |
+
+Periphery evaluates only `precedence.approval` and `absence.after-until`. It refuses the other three Patterns when you evaluate.
+
+## Propose a Candidate
+
+Send `POST /v1/candidates`. The body names the Pattern, binds its parameters, and cites the Intent Artifact.
+
+```json
+{
+  "pattern_id": "precedence.approval",
+  "specification_id": "sagashop.live.ship-requires-prior-charge",
+  "specification_version": "v1",
+  "schema_version": "sagashop-contract-v1",
+  "arguments": {
+    "binding_attribute": { "attribute_key": "sagashop.order.id" },
+    "trigger": { "selector": {
+      "kind": "POST /orders/:id/ship",
+      "required_attributes": { "sagashop.event": "order.ship" }
+    } },
+    "requirement": { "selector": {
+      "kind": "POST /charge",
+      "required_attributes": {
+        "sagashop.event": "payment.charge",
+        "sagashop.payment.status": "success"
+      }
+    } }
+  },
+  "evidence": {
+    "trigger_source": { "monitored_application": "shop-order", "source": "shop-order" },
+    "requirement_source": { "monitored_application": "shop-payment", "source": "shop-payment" }
+  },
+  "artifacts": [{ "id": "runbook", "kind": "runbook", "text": "…the text of your runbook…" }],
+  "citations": [{ "artifact": "runbook", "anchor": "…a passage that appears in the text…" }],
+  "rationale": "A ship needs the same order's successful charge in its causal past.",
+  "corpus": "happy"
+}
+```
+
+Note these rules:
+
+- `kind` in a selector is the Event kind. It equals the span name that your service uses.
+- `evidence` names the sources that the Specification needs. Use the application id and the source id from your registry.
+- Every Candidate must cite an Intent Artifact. An uncited proposal is refused. A citation `anchor` must appear in the artifact text and must not be too short.
+- An artifact `kind` is `system-prompt`, `tool-schema`, `policy`, or `runbook`.
+- `rationale` must not be blank.
+
+The dashboard has a Specification editor at `/specifications/new` that builds this request for you.
+
+### Choose a replay corpus
+
+Sentinel replays the Candidate over recorded Traces before anyone reviews it. The `corpus` field chooses the Traces. A Specification may name only sources that the corpus carried. Otherwise periphery refuses it with `ungrounded_source`.
+
+| `corpus` | Traces that Sentinel replays |
+| --- | --- |
+| `happy` | A recorded happy-path capture from the SagaShop test shop. It is compiled into the binary. |
+| `production-change` | The legitimate Trace of the production-change demo, compiled into the binary. |
+| `sagashop-platform` | Events of the SagaShop platform, compiled into the binary. They include legitimate and adversarial Traces. |
+| `retained` | The Traces that your own deployment retained. **Not released.** |
+
+<Warning>
+The `retained` corpus is not released. Pull request 721 in the Sentinel repository adds it. The pull request was open and unmerged when this page was written. A build without it answers `unknown_corpus`.
+</Warning>
+
+Until `retained` ships, you can replay only the three recorded corpora. A Candidate for your own services must therefore use sources that these corpora carry. This limit is a known gap.
+
+#### How `retained` works
+
+When `retained` is available, these rules apply:
+
+- Sentinel reads only monitored-Tenant Events. It never reads Corpus-class Events.
+- Sentinel replays only closed Traces. A Partial Trace is missing evidence and is refused by name.
+- History cannot make intent. You must list each Trace that you attest as legitimate in `attested_traces`. Use the derived key of the Trace. Naming none is refused.
+- A refusal has the kind `retained_corpus_refused`.
+
+## Read the replay evidence
+
+The response and `GET /v1/candidates/{specification_id}/{specification_version}` show the Candidate. Check these fields:
+
+- `review_status` starts as `proposed`.
+- `would_fire` states what the Candidate found in the replay. It counts Traces, `satisfy` Verdicts, and `would_violate` Verdicts.
+- `blockers` lists reasons that Promotion is refused. Examples are a replay that examined nothing, a Candidate that never raised an obligation, and a selector that is a few edits away from a value that the corpus carries.
+- `advisories` lists notes that do not block Promotion.
+
+A near-miss selector is often a typo. Fix it and propose again.
+
+If a Candidate needs evidence that no corpus holds yet, use the warm step. Send `POST /v1/candidates/{specification_id}/{specification_version}/warm` with an `observed_at` body. Sentinel publishes a Filter so that your Probes start to send the missing Events. Periphery refuses a warm request when replay already covers the evidence (`does_not_require_new_evidence`) or when a selector is a near miss (`selector_near_miss`).
+
+## Review and promote
+
+A person reviews every Candidate. Promotion is never automatic.
+
+Send `POST /v1/candidates/{specification_id}/{specification_version}/review`.
+
+```json
+{
+  "decision": "promote",
+  "note": "Reviewed against the shipping runbook.",
+  "observed_at": { "sentinel_clock_id": "sentinel", "nanoseconds": 1700000000000000000 }
+}
+```
+
+- `decision` is `promote` or `reject`.
+- `note` must not be blank.
+- A review is final. A second review answers 409 `already_reviewed`.
+- Promotion answers 409 `promotion_blocked` while blockers remain.
+- Promotion answers 409 `missing_completeness` until each required source has declared completeness.
+
+Promotion publishes an Event Filter. Periphery sends the Filter to your Probes. A rejection publishes nothing.
+
+## Run in Shadow
+
+After Promotion, the Specification is Warming.
+
+1. Wait until each required Probe acknowledges the new Filter epoch in a heartbeat.
+2. Send `POST /v1/filters/advance-readiness` with an empty JSON body `{}`. Periphery moves the Specification from Warming to Active only when the barrier and liveness checks clear.
+3. Send Events from your services. Periphery evaluates the published Specification when Events and heartbeats arrive. You do not need to call `POST /v1/evaluate`.
+4. Open the **Verdicts** page.
+
+The evaluation mode stays Shadow. Active does not mean that Sentinel blocks.
+
+A Verdict stays `Provisional` until the activation barrier clears for its Sequence Epoch. If a source opened a new epoch after the Filter was published, send `POST /v1/filters/rearm-activation`. This route republishes the Filter at the next epoch and restamps the barrier. It answers 409 until every required source has acknowledged the current Filter epoch. After a restamp, each required source must send one more heartbeat before its Verdicts turn `Authoritative`.
+
+## Related pages
+
+- [API reference](/sentinel/reference/api) lists every route and its errors.
+- [How Sentinel works](/sentinel/how-it-works) explains Verdict authority.

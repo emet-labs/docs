@@ -1,6 +1,175 @@
 ---
 title: "Installation"
-description: "Requirements and setup steps for your environment."
+description: "Set up a local Sentinel with Postgres, apply the migrations, register sources, and start the control plane and dashboard."
 ---
 
-Coming soon.
+This guide shows how to run Sentinel with a database that keeps its data between runs. You build Sentinel from the repository and run it on your machine.
+
+<Warning>
+The control plane has no authentication. It binds to loopback by default. Do not expose it on a public interface. Bearer-token authentication and per-source credentials are not built yet.
+</Warning>
+
+## Prerequisites
+
+- A checkout of the Sentinel repository.
+- Devbox, version 0.19.0.
+- A C build toolchain. On macOS, run `xcode-select --install`.
+- macOS on Apple silicon or Linux on arm64. The project tests these platforms.
+
+Set the Devbox version in your shell profile. Without it, the Devbox launcher runs whichever version it finds.
+
+```sh
+export DEVBOX_USE_VERSION=0.19.0
+```
+
+From the repository root, install the pinned tools:
+
+```sh
+devbox install
+```
+
+Run every command below in a Devbox shell. Start one from the repository root:
+
+```sh
+devbox shell
+```
+
+<Note>
+For a quick look without a database, use the [Quickstart](/sentinel/quickstart). Periphery also runs with an in-memory store when `SENTINEL_STORE` is unset. The in-memory store loses all data on restart.
+</Note>
+
+## Start a local Postgres
+
+Entering Devbox does not create or start a database. You do it once.
+
+1. Initialize the data directory. Devbox sets `PGDATA` for you.
+
+   ```sh
+   initdb --encoding=UTF8 --no-locale "$PGDATA"
+   ```
+
+2. Start the Postgres service and wait for it.
+
+   ```sh
+   export PGPORT=5432
+   devbox services up -b postgresql
+   until pg_isready -h "$PGHOST" -p "$PGPORT"; do sleep 1; done
+   ```
+
+3. Set the connection variables and test the connection.
+
+   ```sh
+   export PGDATABASE=postgres
+   export PGUSER="${PGUSER:-$USER}"
+   psql -c 'SELECT 1;'
+   ```
+
+The cluster persists after the shell exits. On later runs, repeat only steps 2 and 3.
+
+## Apply the migrations
+
+Run:
+
+```sh
+just migrate
+```
+
+The command reads the standard libpq variables from your shell. Periphery refuses to start against a database whose migration ledger does not match the build. It exits with status 78 and prints the expected and found versions.
+
+## Register your sources
+
+Periphery admits Events only from sources that you register. Write the registry file now. The format is in [Connect a Probe](/sentinel/connect-a-probe#register-a-source).
+
+If you skip this step on a loopback listen address, periphery serves a built-in registry. It holds five demo handles. Use the built-in registry for demos only.
+
+## Start periphery
+
+Start periphery with Postgres and your registry file:
+
+```sh
+SENTINEL_STORE=postgres \
+SENTINEL_SOURCE_REGISTRY_FILE=/absolute/path/to/source-registry.json \
+just periphery
+```
+
+Periphery prints one line for each startup step. Look for these lines:
+
+- `store schema version N matches this build`
+- `source registry is file "…"`, followed by every handle and its tier
+- `ready; listening on http://127.0.0.1:8080`
+
+Periphery binds the port first. Then it replays state from retained evidence. Until the replay ends, `/readyz` answers 503 and routes that store or evaluate evidence answer 503 with `Retry-After`.
+
+Check that periphery is ready:
+
+```sh
+curl http://127.0.0.1:8080/readyz
+```
+
+A ready periphery answers 200 with `"status": "ready"`. Read the `reconstruction` field too. The value `completed_with_errors` means that a Specification produced no Verdict during the replay. The `failed_specifications` field names it.
+
+## Configure the control plane
+
+You configure periphery with environment variables and two flags.
+
+| Setting | Meaning | Default |
+| --- | --- | --- |
+| `SENTINEL_STORE` | `memory` or `postgres`. | `memory` |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | Postgres connection, read when the store is `postgres`. | none |
+| `--database-url URL` | Postgres connection URL. Pass it after `just periphery`. | none |
+| `SENTINEL_LISTEN` | The listen address. | `127.0.0.1:8080` |
+| `--allow-non-loopback` | Allows a non-loopback listen address. A registry file is then required. | off |
+| `SENTINEL_SOURCE_REGISTRY_FILE` | The path of the source registry. Read once at startup. | the built-in demo registry, on loopback only |
+| `SENTINEL_PROBE_LOG_URL` | Where periphery sends Event Filters and Verdicts as OTLP logs. The form is `http://host:port/v1/logs`. The port is required. | unset: nothing is sent |
+| `SENTINEL_LIVENESS_ACTIVE_MAX_SILENCE_MS` | The Liveness Floor for an active source, in milliseconds. | 60 seconds |
+| `SENTINEL_LIVENESS_IDLE_MAX_SILENCE_MS` | The Liveness Floor for an idle source. It must not be below the active floor. | 15 minutes |
+| `SENTINEL_LIVENESS_TICK_MS` | How often periphery re-checks source liveness, in milliseconds. | 5000 |
+| `SENTINEL_DASHBOARD_DIR` | A directory of built dashboard files that periphery serves. | unset |
+
+`SENTINEL_OBSERVATION_NANOS` pins the Observation Time for hermetic tests. Do not set it in a real run.
+
+A non-loopback listen address does not add authentication.
+
+## Start the dashboard
+
+In a second Devbox shell, run:
+
+```sh
+just run
+```
+
+The dashboard development server listens on `127.0.0.1:5173`. It forwards `/v1`, `/healthz`, and `/readyz` to `127.0.0.1:8080`. To forward to another address, set `SENTINEL_WALKTHROUGH_PROXY_TARGET`. To change the bind address, set `SENTINEL_DASHBOARD_HOST` or `SENTINEL_DASHBOARD_PORT`.
+
+Open <http://127.0.0.1:5173>. Every page reads live data from periphery. The dashboard contains no sample data.
+
+A packaged build serves the dashboard from periphery itself. In that case, open `http://127.0.0.1:8080`.
+
+## Stop Sentinel
+
+Press Ctrl-C in the periphery and dashboard shells. Then stop Postgres:
+
+```sh
+devbox services stop postgresql
+```
+
+## Other install paths
+
+Linux builds with Nix and Docker Compose exist. They install the same periphery, migration tool, and dashboard.
+
+```sh
+nix build .#sentinel
+nix run .#migrate -- --database-url "$DATABASE_URL"
+SENTINEL_STORE=postgres nix run .#serve -- --database-url "$DATABASE_URL"
+```
+
+The repository also holds a NixOS module and a reference Compose stack. These are local acceptance paths. Signed, published release packages do not exist yet.
+
+## Troubleshoot
+
+| Symptom | Cause and fix |
+| --- | --- |
+| Periphery exits with status 78. | The database schema does not match the build. Run `just migrate`. |
+| A request answers 503 `reconstructing`. | Periphery is still replaying evidence. Retry after a second. |
+| Events answer 403 `unknown_source_handle`. | The handle is not in the registry. Add it and restart periphery. |
+| Startup fails on the registry file. | Read the single stderr line. It names the file, the key, and the line. |
+| Periphery refuses to bind. | The address is not loopback. Pass `--allow-non-loopback` and set a registry file. |
