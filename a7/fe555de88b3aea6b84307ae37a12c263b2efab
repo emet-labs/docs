@@ -1,0 +1,23 @@
+sentinel/how-it-works.mdx
+  s_b3adca4d965542::t_bd77faa62881ee 1-132
+sentinel/index.mdx
+  s_b3adca4d965542::t_a3908ed2d77c80 3,6,8-46,49-54,56,59,61-62,64-65
+sentinel/terminology.mdx
+  s_b3adca4d965542::t_6670b57854d0f7 1-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a7fe555de88b3aea6b84307ae37a12c263b2efab",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
