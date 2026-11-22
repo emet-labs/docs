@@ -1,0 +1,23 @@
+docs.json
+  s_b3adca4d965542::t_6db60f8df5ce12 65
+trace-grab/reference/cli.mdx
+  s_b3adca4d965542::t_de0e8e1cd7dbd6 3,17,21-33,41,46-49,51,58-59,66-98
+trace-grab/sources.mdx
+  s_b3adca4d965542::t_7e4455bffe6c17 3,6-13,19-21,23,25,27,29-30,36-37,39,41,43,45,47-48,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "38a69b032ea2ae853249e03a93fdc67ebb7c1db1",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
