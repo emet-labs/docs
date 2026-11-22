@@ -1,0 +1,35 @@
+docs.json
+  s_b3adca4d965542::t_76956ed991d0ad 57-62,67-71
+sentinel/dashboard.mdx
+  s_b3adca4d965542::t_7f58d757388283 1-89
+sentinel/index.mdx
+  s_b3adca4d965542::t_3aec273943aef9 67-87
+sentinel/reference/api.mdx
+  s_b3adca4d965542::t_7e24b8d744f09a 336-366
+sentinel/reference/candidates.mdx
+  s_b3adca4d965542::t_a333c7058f5ed8 1-391
+sentinel/reference/cold-path.mdx
+  s_b3adca4d965542::t_f22c2f3e7a0682 1-195
+sentinel/reference/decisions.mdx
+  s_b3adca4d965542::t_8f19f2aa2ad02b 1-166
+sentinel/reference/patterns.mdx
+  s_b3adca4d965542::t_be585fd73e579d 1-425
+sentinel/reference/rollout.mdx
+  s_b3adca4d965542::t_13d7e8f683e699 1-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c80baedfc6f17f19755c0a03b27f8ec997e3a6d",
+  "prompts": {},
+  "sessions": {
+    "s_b3adca4d965542": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3efd2f-b2c6-4e18-bc14-1bf65e80e593",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Arnab Ghosh <arnabcare21@gmail.com>"
+    }
+  }
+}
