@@ -1,0 +1,120 @@
+---
+title: "Probe SDKs"
+description: "What every Probe SDK does the same way, and a comparison of the seven SDKs."
+---
+
+A Probe SDK puts a Probe in your application. Seven SDKs exist. They share one wire contract and one set of rules. A deployment of mixed languages therefore produces evidence that Sentinel can compare.
+
+The wire is OTLP/HTTP with protobuf bodies. A Probe sends ended spans to `POST /v1/traces` and completeness heartbeats to `POST /v1/logs`. Both requests carry the `x-sentinel-source-handle` header. Sentinel sends Event Filters and Verdicts back to the Probe as OTLP logs.
+
+## Install status
+
+No SDK is on a public package registry. Six SDKs have a public source mirror. Build from the mirror. The Rust SDK has no public mirror yet. Build it from the Sentinel repository.
+
+| SDK | Package name | Version | Runtime | Source |
+| --- | --- | --- | --- | --- |
+| [TypeScript](/sentinel/sdk/typescript) | `@sentinel/probe-sdk` | 0.1.0 | Node.js 24.12 or later | `emet-labs/sentinel-probe-ts` |
+| [Go](/sentinel/sdk/go) | `github.com/emet-labs/sentinel-probe-go` | no tag | Go 1.25 or later | `emet-labs/sentinel-probe-go` |
+| [Python](/sentinel/sdk/python) | `sentinel-probe-sdk` | 0.1.0 | Python 3.9 or later | `emet-labs/sentinel-probe-python` |
+| [JVM](/sentinel/sdk/jvm) | `dev.emet.sentinel:sentinel-probe-sdk-jvm` | 0.1.0 | JDK 21 or later | `emet-labs/sentinel-probe-jvm` |
+| [.NET](/sentinel/sdk/dotnet) | `Sentinel.Probe.Sdk` | 0.1.0 | .NET 10 | `emet-labs/sentinel-probe-dotnet` |
+| [Elixir](/sentinel/sdk/elixir) | `:sentinel_probe_sdk` | 0.1.0 | Elixir 1.16 or later, Erlang/OTP 28 | `emet-labs/sentinel-probe-elixir` |
+| [Rust](/sentinel/sdk/rust) | `sentinel-probe-sdk` | 0.1.0-rc.3 | Rust 1.96 or later | `sdk/rust` in the Sentinel repository |
+
+The package names come from each SDK's manifest. The source mirrors are on GitHub under the `emet-labs` organization. The mirrors carry the generated protobuf types, so a bare clone builds. The published mirrors carry the MPL-2.0 licence. The Sentinel server is closed source.
+
+Sentinel's release process can build candidate packages for private Cloudsmith repositories. These repositories need an entitlement token. They are not a public registry.
+
+## What every Probe does
+
+### It gives each Event an id and a slot
+
+Every Event carries a unique `sentinel.event.id`. If Sentinel receives the same id again with other content, it refuses the second delivery. The SDK does not retry that refusal. The slot stays failed.
+
+Every Event also carries a slot. A slot is a Sequence Epoch and a sequence number. The SDK allocates slots in order. One allocator serves one source. Run one allocator for each source identity.
+
+The first Sequence Epoch is the clock time in Unix milliseconds. On a restart, the epoch must be strictly greater than the last one. If your clock can step backward, store the last epoch. Pass it to the allocator as the previous epoch. Without it, Sentinel refuses a regressed epoch with HTTP 409.
+
+When a heartbeat finds nothing in flight, the epoch closes. The next Event opens a new epoch. A Verdict whose Events cross an epoch change of one source is `Inconclusive`. Only the epoch that was current when Sentinel published the Filter can settle `Authoritative`.
+
+### It sends a completeness heartbeat
+
+The heartbeat reports `last_emitted` and `complete_through`. `complete_through` never passes a slot whose export failed or is still in flight.
+
+- The default interval is 15 seconds.
+- A non-zero interval must be from 1 000 to 59 999 milliseconds. A value of 0 sends a report only when you ask.
+- The heartbeat sends the acknowledged Filter epoch. It sends 0 when no Filter is held.
+- A source can declare itself idle. The next Event ends the idle state.
+- A final heartbeat on shutdown closes the epoch only if every slot was exported.
+- Each heartbeat row also carries epoch-chain fields: `attempted`, `sealed_at`, `predecessor_epoch`, and `superseded`.
+
+### It holds the Event Filter
+
+The Probe receives the Event Filter on a small HTTP log receiver. It replaces the held Filter when a newer epoch arrives. It acknowledges the epoch in the next heartbeat.
+
+The receiver binds to `127.0.0.1` by default. In a container, bind `0.0.0.0` and a fixed port. The receiver has no authentication. Expose it only on a network that Sentinel can reach and others cannot.
+
+### It retries a failed export the same way
+
+| Outcome of a request | Policy |
+| --- | --- |
+| No response (refused, reset, DNS, timeout) | Retried |
+| HTTP 408, 425, 429, 500, 502, 503, 504 | Retried |
+| Any other HTTP status | Final. The slot is failed. |
+| HTTP 2xx with `rejected_spans` above 0 | Final. The slot is failed. |
+| Duplicate Event id refusal | Never retried. The slot stays failed. |
+
+The backoff is exponential with jitter. The defaults are 5 attempts, 100 ms for the base delay, and 5 s for the cap. The wait is a random value from 50 percent to 100 percent of the step. A `Retry-After` header on a 429 or 503 raises the wait, never above the cap.
+
+A slot becomes exported only after an HTTP 2xx response with zero rejected spans. A failed export leaves `complete_through` behind. The Go, Python, JVM, Elixir, and Rust SDKs keep failed spans and try them again later.
+
+### It never throws into your code
+
+The span-end path never throws, never panics, and never blocks. Each SDK exports from a bounded queue on its own thread or process. A failure marks the slot failed, goes to an error callback, and goes to a rate-limited log.
+
+When the queue is full, the SDK drops the newest Event and marks its slot failed. A dropped Event is missing evidence. It is never a pass.
+
+### It carries the causal parent
+
+A Probe puts the parent Event id in the `x-sentinel-parent-event-id` header on outgoing calls. It also reads the header on incoming calls. If the header is absent, it reads the `sentinel` member of `tracestate`, for example `sentinel=<eventId>`. Each SDK has an inject function and an extract function.
+
+A span with a parent span but no parent Event id is refused. A span id never replaces an Event id. If a caller is not a Probe, such as a browser or `curl`, enable the unattributed remote parent option. The Event then becomes a causal root.
+
+## The span-to-Event contract
+
+All SDKs send the same span attributes.
+
+| Attribute | Required | Meaning |
+| --- | --- | --- |
+| `sentinel.event.id` | Yes | The Event id. |
+| `sentinel.sequence.epoch` | Yes | The Sequence Epoch of the slot. |
+| `sentinel.sequence.number` | Yes | The sequence number of the slot. |
+| `sentinel.schema.version` | Yes | The schema version string that you choose. |
+| `sentinel.acknowledged_filter_epoch` | Yes | The Filter epoch that the Probe holds. It is 0 before the first Filter. |
+| `sentinel.claimed_sensitivity` | Expected | A sensitivity name that the source claims. It must not be `SENSITIVITY_UNSPECIFIED`. The TypeScript and JVM exporters refuse a span without it. Where an SDK stamps it, the default is `SENSITIVITY_INTERNAL`. |
+| `sentinel.parent.event.id` | When a parent exists | The causal parent. |
+| `sentinel.claimed_capabilities` | No | Capabilities that the source claims. |
+
+Sentinel refuses any other `sentinel.*` attribute. It refuses a span that has not ended. The span name becomes the Event kind. Other attributes pass through as Event attributes. Span links name additional causal parents. Each link needs its own `sentinel.event.id`.
+
+Sentinel assigns the Source Tier, the application id, the source id, and the capabilities from the registry. The Probe cannot set them.
+
+## Comparison
+
+| SDK | Who stamps the Event attributes | How the exporter uses the Filter | Log receiver |
+| --- | --- | --- | --- |
+| TypeScript | `startEvent` stamps them. | Drops an Event that no Specification selects. It sends kept Events in full. | `startVerdictLogReceiver`, or the `receiver` option |
+| Go | You set them, or use the `HostStamp` option. | Does not drop. Call `filter.ApplyFilter` yourself. | `otlp.Listen`, `otlp.ListenWith` |
+| Python | You set them with `contract_attributes`, or use `ProbeTracer.emit`. | Drops an Event that no Specification selects. | `LogReceiver` |
+| JVM | You set them on each span. | Drops an Event when you pass a `filter` supplier. | `OtlpLogReceiver` |
+| .NET | The processor stamps them. `SchemaVersion` is required. | Drops an Event when you pass `Filters`. | `OtlpLogReceiver.Start` |
+| Elixir | The processor takes them from its configuration and the span. | Drops an Event and sends the projected attributes. | `Sentinel.Probe.SDK.Otlp.Receiver` |
+| Rust | The `HostStamp` builder option stamps them. | Drops an Event when you pass `filter_store`. | `LogReceiver` |
+
+## Known limits that all SDKs share
+
+- A Probe sends no blocking decisions today. The enforcement gate exists in most SDKs. The Rust SDK has none. Periphery does not serve the decision route.
+- A span that the host sampler drops never reaches the SDK. Keep the sampler always on. A dropped span can hide an attempt from the `attempted` counter.
+- A Filter-dropped slot holds `complete_through` back. Declaring filtered ranges on the wire is not built yet.
+- No SDK authenticates itself to Sentinel. The handle names a source only.
+- Sentinel refuses OTLP/JSON and OTLP/gRPC. Only protobuf bodies work.

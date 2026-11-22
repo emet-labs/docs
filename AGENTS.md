@@ -14,8 +14,10 @@
 
 ## Terminology
 
-{/* Add product-specific terms and preferred usage */}
-{/* Example: Use "workspace" not "project", "member" not "user" */}
+- Sentinel pages use the terms of `CONTEXT.md` in the Sentinel repository (the glossary): Specification, Verdict, Event, Trace, Pattern, Evidence Coverage, Watermark, Source Tier, Data Class. Do not use "rule", "policy", or "result" for these concepts.
+- trace-grab pages keep the names that the tool uses: `policy`, `report.md`, `corpus`, `record`, `span`, `disposition`. These are technical names. Do not rename them.
+- Use one word for one meaning: "tokenize" (not "mask" or "redact"), "bundle" (the output directory), "grab" (the command), "pass unchanged" (a field that trace-grab does not change).
+- Writing standards: ASD-STE100 Simplified Technical English (procedure sentences of at most 20 words, other sentences of at most 25 words, active voice, no semicolons, no contractions) and the Diataxis framework (each page is one of tutorial, how-to guide, reference, or explanation).
 
 ## Style preferences
 
@@ -33,9 +35,7 @@
 
 ## Content boundaries
 
-- Sentinel is pre-launch: don't document internals, architecture, component names, or ADR
-  content. Sentinel pages are placeholders (product-facing section names, "Coming soon" body)
-  until the product ships.
+- Sentinel is pre-launch, but its section is now written. The pages describe how Sentinel works, how to connect a Probe, each Probe SDK, and the HTTP routes. State only what the code does today. Verify every command, flag, route, and name against the Sentinel repository. Say plainly what is not built (detect-only, no authentication, no multi-tenancy, SDKs not on public registries). Do not cite ADR numbers or invent roadmap dates.
 - trace-grab is not framed as a commercial product. Its docs should read as an invitation to
   donate trace data to Emet Labs' research, sanitized and auditable before you send anything —
   not as a sales pitch or a general-purpose tool.

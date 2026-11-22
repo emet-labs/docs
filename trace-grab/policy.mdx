@@ -1,59 +1,56 @@
 ---
 title: "Policy configuration"
-description: "Reveal, tokenize, or drop specific fields with tracegrab.yaml."
+description: "Reference for tracegrab.yaml: dispositions, path syntax, rule resolution, and time handling."
 ---
 
-`tracegrab.yaml` narrows the default disposition (tokenize strings, pass everything else) on a
-per-field basis. Zero configuration is a valid configuration — with no file at all, you get
-the safe default.
-
-## The four dispositions
-
-| Disposition | Meaning |
-| --- | --- |
-| `reveal` | Pass the value verbatim — no tokenization. |
-| `tokenize` | Replace the value with a `TOK_` token. Written in config only to narrow an over-broad `reveal`. |
-| `drop` | Remove the field entirely, including its linkage. |
-| `default` | No rule matched. The built-in disposition applies: pass-verbatim fields pass, string leaves tokenize, numbers/booleans/null pass. |
+The file `tracegrab.yaml` changes the default disposition for single fields. The default disposition tokenizes strings and passes everything else. You do not need this file. With no file, trace-grab uses the safe default.
 
 ```yaml
 reveal:
   - outputs.status
   - inputs.currency
 drop:
-  - inputs.patient_id     # remove entirely — even the linkage is sensitive
-time: shift               # preserve all intervals, destroy absolute timestamps
+  - inputs.patient_id     # remove entirely, even the linkage is sensitive
+time: shift               # keep all intervals, destroy absolute timestamps
 ```
+
+## Keys
+
+The valid top-level keys are `version`, `reveal`, `tokenize`, `drop`, and `time`. Any other top-level key is an error. The CLI exits with a non-zero code and writes no corpus.
+
+## Dispositions
+
+| Disposition | Meaning |
+| --- | --- |
+| `reveal` | Passes the value unchanged. No tokenization. |
+| `tokenize` | Replaces the value with a `TOK_` token. Write it in the configuration only to narrow a `reveal` rule that is too broad. |
+| `drop` | Removes the field, including its linkage. |
+| `default` | No rule matched. The built-in disposition applies. Pass-verbatim fields pass. String leaves become tokens. Numbers, booleans, and null pass. |
 
 ## Path syntax
 
-Policy entries use the same dotted paths printed in `report.md`:
+Policy entries use the same dotted paths that `report.md` prints.
 
-- `.` separates object segments: `inputs.user.email`.
-- `*` matches exactly one segment: `inputs.*.email` matches `inputs.user.email`, not
-  `inputs.user.profile.email`.
-- `**` matches zero or more segments: `inputs.**` matches `inputs` and every descendant.
-- Array elements use a literal `[*]` suffix on their parent segment: `inputs.items[*].sku`.
+- `.` separates object segments. Example: `inputs.user.email`.
+- `*` matches exactly one segment. The path `inputs.*.email` matches `inputs.user.email`. It does not match `inputs.user.profile.email`.
+- `**` matches zero or more segments. The path `inputs.**` matches `inputs` and all of its descendants.
+- A literal `[*]` suffix on the parent segment matches array elements. Example: `inputs.items[*].sku`.
 
-There is no escaping syntax. A source key containing `.` or a wildcard token can't be targeted
-unambiguously — copy the exact path from the generated report instead of guessing.
+There is no escape syntax. You cannot target a source key that contains `.` or a wildcard token without ambiguity. Copy the exact path from the generated report.
 
-## How conflicting rules resolve
+## How trace-grab resolves rules
 
-Given a concrete path, `trace-grab`:
+For a concrete path, trace-grab does these steps:
 
-1. Collects every rule (across `reveal`, `tokenize`, `drop`) whose pattern matches.
-2. If none match, applies `default`.
-3. Otherwise finds the **most specific** matching rule (literal segment count first, then
-   total segment count — fewer wildcards wins).
-4. If one rule is uniquely most specific, its disposition wins.
-5. If multiple rules tie on specificity, the **most restrictive** disposition wins: `drop` >
-   `tokenize` > `reveal`.
+1. It collects every rule in `reveal`, `tokenize`, and `drop` whose pattern matches the path.
+2. If no rule matches, it applies `default`.
+3. Otherwise, it finds the most specific matching rule. It compares the number of literal segments first. It then compares the total number of segments. A rule with fewer wildcards wins.
+4. If one rule is the most specific, its disposition wins.
+5. If more than one rule has the same specificity, the most restrictive disposition wins. The order is `drop`, then `tokenize`, then `reveal`.
 
-Failing closed is the only acceptable ambiguity resolution in a security config: when two
-rules are equally specific, the one that removes more information wins.
+When two rules have the same specificity, the rule that removes more information wins. A security configuration must fail closed.
 
-### Worked example: narrow an over-broad reveal
+### Example: narrow a reveal that is too broad
 
 ```yaml
 reveal:
@@ -62,32 +59,27 @@ tokenize:
   - inputs.auth.secret
 ```
 
-Both rules match `inputs.auth.secret`, but the exact `tokenize` path is more specific than
-`inputs.**`, so the secret is tokenized while other input strings remain revealed.
+Both rules match `inputs.auth.secret`. The exact `tokenize` path is more specific than `inputs.**`. The secret becomes a token. The other input strings stay revealed.
 
-## Required fields can't be removed
+## Required fields
 
-Top-level record fields (`id`, `trace_id`, `parent_id`, `name`, `kind`, `start`, `end`,
-`status`, `error.kind`, `error.message`, `source.vendor`) and structurally required fields
-(`labels[*].key`, `labels[*].value`, `links[*].trace_id`, `links[*].span_id`) can't be dropped
-from the record. For these, `drop` falls back to the next most restrictive option:
+You cannot remove these top-level record fields: `id`, `trace_id`, `parent_id`, `name`, `kind`, `start`, `end`, `status`, `error.kind`, `error.message`, and `source.vendor`.
 
-- **String fields** (`id`, `name`, `error.message`, ...): `drop` → `tokenize`.
-- **Non-string fields** (e.g. a numeric `labels[*].value`): `drop` → `default` (pass).
-- **`status`**: always passes — it's an enum, not free text.
+You also cannot remove these structurally required fields: `labels[*].key`, `labels[*].value`, `links[*].trace_id`, and `links[*].span_id`.
 
-`drop` on a key *inside* a bag (`inputs.user.email`, `unmapped.note`, ...) removes that key
-from the output object normally — this fallback only applies to the required fields above.
+For these fields, `drop` falls back to the next most restrictive option:
 
-## Unknown keys and unmatched rules
+- String fields (`id`, `name`, `error.message`, and others): `drop` becomes `tokenize`.
+- Non-string fields (for example a numeric `labels[*].value`): `drop` becomes `default`, and the value passes.
+- `status`: always passes. It is an enum and not free text.
 
-A typo'd top-level key in `tracegrab.yaml` (anything outside `version`, `reveal`, `tokenize`,
-`drop`, `time`) is a hard error — the CLI exits non-zero and no corpus is written.
+A `drop` on a key inside a bag removes that key from the output object. Examples are `inputs.user.email` and `unmapped.note`. The fallback applies only to the required fields above.
 
-A rule that matches zero paths in the corpus is reported in `manifest.json`'s `warnings` array
-and surfaced in `report.md`. This is the classic redaction failure: a rule written against a
-half-remembered field name, silently matching nothing. Treat any unmatched-rule warning as a
-configuration error to investigate.
+## Rules that match no path
+
+A rule that matches no path in the corpus appears in the `warnings` array of `manifest.json`. It also appears in `report.md`. This is a common redaction failure. A rule uses a field name that the author remembered wrongly, and it silently matches nothing.
+
+Treat each unmatched-rule warning as a configuration error. Investigate it.
 
 ## Time handling
 
@@ -95,6 +87,6 @@ configuration error to investigate.
 time: shift
 ```
 
-Applies a single constant per-corpus offset — derived from your salt, so it's stable across
-batches — to every `start`/`end` value. Ordering and every interval survive; absolute position
-does not. The default, `time: absolute`, leaves timestamps untouched.
+The value `shift` applies one constant offset to every `start` and `end` value in the corpus. trace-grab derives the offset from your salt. The offset is the same across batches. Ordering and all intervals stay. Absolute position does not stay.
+
+The default value is `time: absolute`. It leaves timestamps unchanged.

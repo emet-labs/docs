@@ -1,42 +1,88 @@
 ---
 title: "Overview"
-description: "What Sentinel is and where to go next."
+description: "What Sentinel is, who it is for, and the rule that missing evidence is never a pass."
 ---
 
-Sentinel gives you an audit-ready answer to a simple question: what did your AI agents
-actually do, and can you prove it?
+Sentinel checks what your systems did against Specifications that you write and review. It reports a Verdict and the evidence behind the Verdict.
 
-This section is a work in progress — full documentation is coming soon. Here's what to expect:
+Many AI agents and automated jobs act across several applications. Each application logs only its own part. No single log shows the full sequence. Sentinel joins the parts and checks the sequence.
+
+## Who Sentinel is for
+
+Sentinel is for teams that run AI agents or automation with high impact. Examples are payments, infrastructure changes, tickets, and approvals.
+
+You use Sentinel when you must answer this question: what did the deployment do, and is the evidence strong enough to trust the answer?
+
+## The one rule
+
+Missing evidence is never a pass.
+
+If evidence is absent or incomplete, Sentinel reports `Inconclusive`. It names what is missing. Sentinel reports `Satisfy` only after Evidence Coverage closes.
+
+This rule shapes the whole product. When Sentinel cannot tell, it says so.
+
+## What Sentinel reports
+
+A Verdict has an outcome and an authority.
+
+| Part | Values |
+| --- | --- |
+| Outcome | `Satisfy`, `Violate`, `Inconclusive` |
+| Authority | `Provisional`, `Authoritative` |
+
+Each Verdict links to its Assurance Envelope. The Assurance Envelope lists the sources, gaps, Watermarks, and Filter epochs behind the Verdict. For details, see [How Sentinel works](/sentinel/how-it-works).
+
+## What works today
+
+Read this list before you plan a rollout.
+
+- Sentinel detects. It does not block. Every Specification runs in Shadow.
+- You run Sentinel yourself. It ships as a self-hosted server. You build it from the repository.
+- The server has no authentication. It binds to loopback by default. Do not expose it on a public network.
+- You register sources in a JSON file. No HTTP route registers a source.
+- Seven Probe SDKs exist. No SDK is on a public package registry yet. See [Probe SDKs](/sentinel/sdk/index).
+- Sentinel has no multi-tenant mode. See [Multi-tenant setup](/sentinel/multi-tenant-setup).
+
+## Where to go next
 
 <CardGroup cols={2}>
+  <Card title="How Sentinel works" icon="diagram-project" href="/sentinel/how-it-works">
+    Probes, Events, causality, Evidence Coverage, and Verdicts.
+  </Card>
+  <Card title="Terminology" icon="book" href="/sentinel/terminology">
+    Every term that you meet, and the words to avoid.
+  </Card>
   <Card title="Quickstart" icon="rocket" href="/sentinel/quickstart">
-    Get Sentinel running and see your first result.
+    Run Sentinel on your machine and read a Verdict.
   </Card>
   <Card title="Installation" icon="download" href="/sentinel/installation">
-    Requirements and setup for your environment.
+    Set up Postgres, run the migrations, and start the control plane.
   </Card>
-  <Card title="Multi-tenant setup" icon="building" href="/sentinel/multi-tenant-setup">
-    Configure Sentinel across teams, environments, or organizations.
+  <Card title="Connect a Probe" icon="plug" href="/sentinel/connect-a-probe">
+    Register a source and send Events from your application.
+  </Card>
+  <Card title="Probe SDKs" icon="code" href="/sentinel/sdk/index">
+    One reference page for each of the seven SDKs.
   </Card>
   <Card title="Dashboard" icon="gauge" href="/sentinel/dashboard">
     Run the local dashboard and navigate it with the command palette.
   </Card>
   <Card title="Pattern catalogue" icon="list-check" href="/sentinel/reference/patterns">
-    The temporal patterns you can instantiate as specifications.
-  </Card>
-  <Card title="SDK reference" icon="code" href="/sentinel/reference/sdk">
-    Instrument your application with a Sentinel SDK.
+    The temporal Patterns that you can instantiate as Specifications.
   </Card>
   <Card title="Candidate generation" icon="wand-magic-sparkles" href="/sentinel/reference/candidates">
-    Generate reviewable candidate specifications from your intent artifacts.
+    Generate reviewable Candidates from your Intent Artifacts.
   </Card>
   <Card title="Shadow rollout" icon="rotate" href="/sentinel/reference/rollout">
-    How a published specification warms in shadow before it becomes authoritative.
+    How a Specification warms in Shadow before it becomes authoritative.
   </Card>
   <Card title="Enforcement decisions" icon="scale-balanced" href="/sentinel/reference/decisions">
     How Sentinel permits, defers, or denies a pending action.
   </Card>
-  <Card title="Control plane API" icon="server" href="/sentinel/reference/api">
-    Run the HTTP server and produce a persisted verdict end to end.
+  <Card title="Cold-path guards" icon="snowflake" href="/sentinel/reference/cold-path">
+    The guard operators that run over Watermark-consistent evidence.
+  </Card>
+  <Card title="API reference" icon="server" href="/sentinel/reference/api">
+    Every route of the control plane.
   </Card>
 </CardGroup>

@@ -20,17 +20,38 @@
         "tab": "Sentinel",
         "groups": [
           {
-            "group": "Getting Started",
+            "group": "Understand",
             "pages": [
               "sentinel/index",
+              "sentinel/how-it-works",
+              "sentinel/terminology"
+            ]
+          },
+          {
+            "group": "Get started",
+            "pages": [
               "sentinel/quickstart",
               "sentinel/installation"
             ]
           },
           {
-            "group": "Setup",
+            "group": "Connect your system",
             "pages": [
-              "sentinel/multi-tenant-setup"
+              "sentinel/connect-a-probe",
+              "sentinel/write-a-specification"
+            ]
+          },
+          {
+            "group": "Probe SDKs",
+            "pages": [
+              "sentinel/sdk/index",
+              "sentinel/sdk/typescript",
+              "sentinel/sdk/go",
+              "sentinel/sdk/python",
+              "sentinel/sdk/jvm",
+              "sentinel/sdk/dotnet",
+              "sentinel/sdk/elixir",
+              "sentinel/sdk/rust"
             ]
           },
           {
@@ -42,13 +63,13 @@
           {
             "group": "Reference",
             "pages": [
+              "sentinel/reference/api",
               "sentinel/reference/patterns",
               "sentinel/reference/candidates",
               "sentinel/reference/rollout",
               "sentinel/reference/decisions",
               "sentinel/reference/cold-path",
-              "sentinel/reference/sdk",
-              "sentinel/reference/api"
+              "sentinel/multi-tenant-setup"
             ]
           }
         ]
@@ -66,7 +87,6 @@
           {
             "group": "Guides",
             "pages": [
-              "trace-grab/policy",
               "trace-grab/sources",
               "trace-grab/transfer"
             ]
@@ -74,6 +94,7 @@
           {
             "group": "Reference",
             "pages": [
+              "trace-grab/policy",
               "trace-grab/reference/cli",
               "trace-grab/reference/schema"
             ]
@@ -111,5 +132,11 @@
       "cursor",
       "vscode"
     ]
-  }
+  },
+  "redirects": [
+    {
+      "source": "/sentinel/reference/sdk",
+      "destination": "/sentinel/sdk/index"
+    }
+  ]
 }

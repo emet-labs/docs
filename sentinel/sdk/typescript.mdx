@@ -1,0 +1,138 @@
+---
+title: "TypeScript SDK"
+description: "Install, configure, and use the TypeScript Probe SDK, the reference SDK for Sentinel."
+---
+
+The TypeScript SDK is the reference SDK. The other six SDKs follow its behavior. For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Package name | `@sentinel/probe-sdk` |
+| Version | 0.1.0 |
+| Runtime | Node.js 24.12.0 or later |
+| Built on | OpenTelemetry JavaScript SDK |
+| Source | `emet-labs/sentinel-probe-ts` on GitHub |
+
+## Install
+
+The package is not on npm. Build it from the public mirror. The mirror carries the generated protobuf types, so no code generator is needed.
+
+```sh
+git clone https://github.com/emet-labs/sentinel-probe-ts.git
+cd sentinel-probe-ts
+bun install
+bun run build
+```
+
+Then add the built package to your project. The mirror README describes the layout.
+
+## Set up a Probe
+
+`createSentinelProbe` wires the tracer, the sequence allocator, the completeness heartbeat, and the Event Filter store. It creates one Probe for one source.
+
+```ts
+import { createSentinelProbe } from "@sentinel/probe-sdk";
+
+const probe = await createSentinelProbe({
+  sentinelBaseUrl: "http://127.0.0.1:8080",
+  sourceHandle: "shop-payment",
+  schemaVersion: "shop-v1",
+  receiver: { port: 4319 },
+});
+
+const requested = probe.startEvent("payment.charge.requested", {
+  attributes: { "order.id": "order-1001" },
+});
+requested.span.end();
+
+const completed = probe.startEvent("payment.charge.completed", {
+  attributes: { "order.id": "order-1001" },
+  parentEventId: requested.eventId,
+});
+completed.span.end();
+
+await probe.shutdown();
+```
+
+`shutdown()` flushes the exports, sends a final heartbeat, and stops the receiver.
+
+## Configuration
+
+These are the options of `createSentinelProbe`.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `sentinelBaseUrl` | The periphery base URL. When you omit it, nothing is sent, allocated, or declared. | none |
+| `sourceHandle` | The value of `x-sentinel-source-handle`. Required. | none |
+| `schemaVersion` | The value of `sentinel.schema.version`. Required. | none |
+| `tracerName` | The OpenTelemetry tracer name. | the handle |
+| `sensitivity` | The claimed sensitivity of each Event. | `INTERNAL` |
+| `heartbeatIntervalMs` | The heartbeat interval. Allowed: 1000 to 59999, or 0 for none. | 15000 |
+| `resourceAttributes` | OpenTelemetry resource attributes, for example `service.name`. | none |
+| `spanProcessors` | Extra span processors. They run first. | none |
+| `receiver` | `true`, or `{ host, port }`. It starts the log receiver. | off |
+| `allowUnattributedRemoteParent` | Export a span with a non-Probe remote parent as a causal root. | `false` |
+| `onError` | Called for every Event that did not reach Sentinel. It never throws into your code. | none |
+| `onHeartbeatError` | Called when Sentinel refuses a completeness signal. | none |
+| `export` | Exporter tuning. See the next table. | see below |
+| `logger` | A rate-limited error logger. | `console.warn` |
+| `previousEpoch` | The last Sequence Epoch of the previous run, as a `bigint`. | none |
+
+The `export` option takes these fields.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `queueSize` | The most Events that wait to be sent. | 2048 |
+| `maxBatchSize` | The most Events in one request. | 16 |
+| `maxAttempts` | Attempts for each request, including the first. | 5 |
+| `initialBackoffMs` | The first retry delay. | 100 |
+| `maxBackoffMs` | The cap on every retry delay. | 5000 |
+| `requestTimeoutMs` | The timeout of one request. | 10000 |
+| `flushTimeoutMs` | How long `flush()` waits for the queue. | 10000 |
+
+When the queue is full, the SDK drops the newest Event and marks its slot failed.
+
+The log receiver binds to `127.0.0.1`. Its port is a free port unless you set `port`. Set an explicit port so that you can give it to periphery. In a container, set `host: "0.0.0.0"`.
+
+## Span-to-Event mapping
+
+- `probe.startEvent(kind, options)` starts a span named `kind`. The name becomes the Event kind.
+- `startEvent` stamps the Event id (a UUID), the schema version, the acknowledged Filter epoch, and the claimed sensitivity. The sequence allocator stamps the slot.
+- The Event exists when you call `span.end()`. The SDK exports ended spans only.
+- `startEvent` returns `{ span, eventId }`. Pass `eventId` as `parentEventId` to the next Event.
+- Your own `attributes` become Event attributes. A `sentinel.*` attribute that is not part of the contract is refused.
+- You can use the lower-level `createProbeTracer` with your own OpenTelemetry spans. Then you must set the contract attributes yourself.
+
+## Parent Event id propagation
+
+The SDK exports these functions.
+
+```ts
+import {
+  injectParentEventId,
+  extractParentEventId,
+  PARENT_EVENT_ID_HEADER,
+} from "@sentinel/probe-sdk";
+
+// Outgoing call
+injectParentEventId(headers, requested.eventId);
+
+// Incoming call
+const parent = extractParentEventId(request.headers);
+const event = probe.startEvent("order.ship.requested", { parentEventId: parent });
+```
+
+- `PARENT_EVENT_ID_HEADER` equals `x-sentinel-parent-event-id`.
+- A carrier is a plain header object, a Node header map, or a fetch `Headers` object.
+- `extractParentEventId` reads the header first. If the header is absent, it reads the `sentinel` member of `tracestate`.
+- The header name is not case sensitive. If a header holds an array, the first element wins.
+- `injectParentEventId` ignores a blank id.
+
+## Known limits
+
+- The Probe log receiver and the enforcement gate exist. Periphery does not serve decision requests. The gate cannot block a real action.
+- Sentinel keeps one global Probe log URL for Event Filters and Verdicts. You can add `probe_log_url` for each source in the registry.
+- A span with a local parent and no parent Event id is refused. A remote parent that is not a Probe is refused unless you set `allowUnattributedRemoteParent`.
+- Keep the OpenTelemetry sampler always on. A span that the sampler drops is invisible to the SDK.
+- The receiver binds to IPv4 loopback by default. It has no authentication.
+- The SDK takes `previousEpoch` as a `bigint`. It does not store the epoch for you.

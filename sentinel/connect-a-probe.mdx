@@ -1,0 +1,177 @@
+---
+title: "Connect a Probe"
+description: "Register a source, instrument an application with a Probe SDK, and check that Events and completeness arrive."
+---
+
+This guide shows how to send Events from one application to Sentinel. You register the application as a source. You add a Probe to the application. Then you check the result in the dashboard.
+
+## Before you start
+
+- Periphery runs. See [Installation](/sentinel/installation).
+- You chose one of the seven [Probe SDKs](/sentinel/sdk/index) for your application.
+- You know the base URL of periphery, for example `http://127.0.0.1:8080`.
+
+<Warning>
+No HTTP route registers a source. The registry is a JSON file that you give to periphery at startup. Periphery has no authentication. The handle names a source. It does not prove who sent the data.
+</Warning>
+
+## Register a source
+
+A source handle is the value of the `x-sentinel-source-handle` header. Each Probe sends its handle with every request. Periphery looks the handle up in the source registry. The registry gives each Event its application id, source id, Source Tier, and capabilities. The Probe cannot choose them.
+
+1. Choose a handle for the application. Use visible ASCII with no spaces. Periphery matches it with case sensitivity.
+2. Decide the Source Tier. See the table below.
+3. Write the registry file.
+
+   ```json
+   {
+     "sources": [
+       {
+         "handle": "shop-payment",
+         "monitored_application_id": "shop-payment",
+         "source_id": "sagashop-probe",
+         "tier": "anchor",
+         "capabilities": ["causal_edges", "completeness_signals"],
+         "topology_id": "sagashop-live"
+       },
+       {
+         "handle": "shop-order",
+         "monitored_application_id": "shop-order",
+         "source_id": "sagashop-probe",
+         "tier": "contributing",
+         "capabilities": ["causal_edges", "completeness_signals"],
+         "topology_id": "sagashop-live"
+       }
+     ]
+   }
+   ```
+
+4. Set `SENTINEL_SOURCE_REGISTRY_FILE` to the path of the file. Restart periphery.
+5. Read the startup line. It names the file and lists each handle with its tier.
+
+### Registry keys
+
+Every key is required except `probe_log_url`. Periphery refuses an unknown key.
+
+| Key | Meaning |
+| --- | --- |
+| `handle` | The exact header value. |
+| `monitored_application_id` | The Monitored Application that the Events belong to. It can differ from the handle. |
+| `source_id` | The Probe within that Monitored Application. |
+| `tier` | `anchor` or `contributing`. |
+| `capabilities` | A list. Allowed values: `observe_before_effect`, `causal_edges`, `completeness_signals`, `bounded_clock_uncertainty`. The list can be empty. |
+| `topology_id` | The Topology id that Sentinel records on the source. Nothing reads it yet. |
+| `probe_log_url` | Optional. Where periphery sends the published Event Filter for this source. Use `http://host:port/v1/logs`. |
+
+Periphery refuses to start for these reasons:
+
+- A handle appears twice.
+- Two handles name the same application id and source id.
+- An entry lists a capability twice.
+- A `contributing` entry lists `observe_before_effect`.
+
+### Choose the tier
+
+| Tier | Use it when |
+| --- | --- |
+| `anchor` | The Monitored Application cannot suppress or forge the source. Examples are a gateway, a permission system, or an identity system. |
+| `contributing` | The source runs inside the Monitored Application. |
+
+Nothing is anchor unless an entry says so. A Probe that sends `sentinel.claimed_tier` is refused.
+
+The capability `observe_before_effect` is accepted only on an `anchor` entry. It gives no blocking today.
+
+### Change an entry later
+
+A registry change takes effect at the next restart. It does not change stored Verdicts.
+
+A change of tier or capabilities takes effect when the source opens a new Sequence Epoch. Until then, periphery refuses the next completeness signal with 409 `non_monotonic_refused`.
+
+Removing a handle is not a way to revoke a source. Stored evidence and Verdicts stay.
+
+## Add the Probe to your application
+
+Each SDK needs the same inputs:
+
+- The periphery base URL.
+- The source handle.
+- A schema version string that you choose.
+
+The Probe then does five jobs for you. It stamps each Event with an id, a Sequence Epoch, and a sequence number. It sends ended spans to `POST /v1/traces`. It sends a completeness heartbeat to `POST /v1/logs`. It holds the Event Filter. It carries the parent Event id between services.
+
+The TypeScript SDK shows the shape. The other SDKs differ in names but not in meaning. See the [SDK pages](/sentinel/sdk/index).
+
+```ts
+import { createSentinelProbe } from "@sentinel/probe-sdk";
+
+const probe = await createSentinelProbe({
+  sentinelBaseUrl: "http://127.0.0.1:8080",
+  sourceHandle: "shop-payment",
+  schemaVersion: "shop-v1",
+  receiver: true,
+});
+
+const requested = probe.startEvent("payment.charge.requested");
+requested.span.end();
+const completed = probe.startEvent("payment.charge.completed", {
+  parentEventId: requested.eventId,
+});
+completed.span.end();
+
+await probe.shutdown();
+```
+
+Follow these rules in every language:
+
+- Name each span with the Event kind that your Specification will use. The span name becomes the Event kind.
+- End the span to send the Event. An open span is not an Event.
+- Create two Events for a request and its completion.
+- Pass the parent Event id to each Event that a previous Event caused. Across applications, put the id in the `x-sentinel-parent-event-id` header.
+- Call the shutdown method on exit. It sends a final heartbeat.
+
+<Note>
+A span with a parent span but no parent Event id is refused. A span id is never a substitute for an Event id. If callers that are not Probes call your service, enable the SDK option for an unattributed remote parent. The Event then becomes a causal root. A Specification that needs the edge stays `Inconclusive`.
+</Note>
+
+## Receive the Event Filter
+
+Periphery pushes the Event Filter to your Probe as an OTLP log. The Probe runs a small log receiver for this.
+
+1. Start the receiver in the Probe. It binds to `127.0.0.1` on a free port by default. In a container, bind `0.0.0.0` on a fixed port.
+2. Tell periphery where the receiver is. Use the global `SENTINEL_PROBE_LOG_URL` for one Probe. Use `probe_log_url` in the registry entry for more than one.
+
+The receiver has no authentication. Bind it only on a network that Sentinel can reach and others cannot.
+
+A Probe that keeps its Filter in memory forgets it on restart and acknowledges epoch 0. Periphery then sends the Filter again. It sends at most one push for each source every 10 seconds.
+
+## Check the connection
+
+1. Open the **Sources** page. The route is `/sources`. Find your source. Check these values:
+   - The Source Tier matches the registry.
+   - The activity is not silent.
+   - `last_emitted` rises when your application emits Events.
+   - `complete_through` reaches `last_emitted` when exports succeed.
+2. Open the **Traces** page. The route is `/traces`. Choose the Data Class `tenant`. Events from your Probe use this class. Find your Events.
+3. Check the coverage of each Trace. A Trace is `partial` when a causal predecessor is missing. Fix the parent Event id propagation.
+
+You can read the same data from the HTTP API.
+
+```sh
+curl http://127.0.0.1:8080/v1/sources
+curl "http://127.0.0.1:8080/v1/traces?data_class=tenant"
+```
+
+The **Applications** page has a Connect wizard with five steps: Application, Sources, Instrument, Register, and Verify. The wizard builds the registry document for you to copy. It cannot apply the document.
+
+### If it does not work
+
+| Response or symptom | Cause |
+| --- | --- |
+| 401 `missing_source_handle` | The Probe did not send `x-sentinel-source-handle`. |
+| 403 `unknown_source_handle` | The handle is not in the registry. Add it and restart periphery. |
+| 415 `unsupported_media_type` or `unsupported_encoding` | The body is not OTLP/HTTP protobuf with identity or gzip encoding. Periphery accepts no JSON and no gRPC. |
+| 400 `otlp_decode` | A span lacks a required attribute. The message names it. |
+| 409 `non_monotonic_refused` | A completeness signal went backward or reopened a closed epoch. |
+| The Sources page shows no `complete_through`. | The heartbeat does not run. The default interval is 15 seconds. |
+| A Specification stays `Inconclusive`. | A required source is silent, or a causal parent is missing. Open the Verdict and read its Assurance Envelope. |
+| Promotion answers 409 `missing_completeness`. | A required source has not declared completeness yet. Start its heartbeat. |

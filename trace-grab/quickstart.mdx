@@ -1,70 +1,64 @@
 ---
 title: "Quickstart"
-description: "Run your first grab and verify a value never appears in plaintext."
+description: "Run your first grab and verify that a value never appears in plaintext."
 ---
 
-## Prerequisites
+In this tutorial, you sanitize a trace export. You then review the output and check that a sensitive value is not in it.
 
-`trace-grab` requires Node.js 20 or later. No installation step is required — run it directly
-with `npx`.
+## Before you start
 
-## 1. Sanitize an export
+You need Node.js 20 or later. You do not install trace-grab. You run it with `npx`.
 
-Point `grab` at a file or directory you already exported (a LangSmith export, an OTLP JSON
-file, or plain span-shaped JSONL), and give it an output directory:
+You also need a trace export on your disk. It can be a LangSmith export, an OTLP JSON file, or plain span-shaped JSONL.
+
+## 1. Sanitize the export
+
+Run `grab` with the path to your export and an output directory.
 
 ```sh
 npx @emetlabs/trace-grab grab ./langsmith-export --out ./corpus --from langsmith
 ```
 
-A single file's format is auto-detected from its content, so `--from` is optional for a
-lone OTLP JSON or JSONL file. A directory is only ever read by the LangSmith export reader, so
-`--from langsmith` is required whenever the input is a directory — pointing `grab` at a
-directory without it exits with an actionable error rather than guessing. `--from
-langsmith-api` pulls directly from the LangSmith API instead of reading a file at all (see
-[Sources](/trace-grab/sources)).
+<Note>
+The input in this example is a directory. When the input is a directory, you must add `--from langsmith`. Without it, `grab` stops with an error. For a single file, `--from` is optional. See the [CLI reference](/trace-grab/reference/cli).
+</Note>
 
-On first run, `trace-grab` writes a secret salt to `.trace-grab/salt` (mode `0600`) and prints
-a notice. **Keep this file.** It keeps token assignment stable across batches — lose it, and a
-second corpus won't correlate with the first, with no error to notice.
+On the first run, trace-grab writes a secret salt to `.trace-grab/salt` (mode `0600`). It also prints a notice.
+
+**Keep this file.** The salt keeps token assignment stable across batches. If you lose it, a second corpus does not correlate with the first. trace-grab shows no error in this case.
 
 `grab` writes four files to the output directory:
 
 | File | Contents |
 | --- | --- |
-| `corpus.jsonl` | One sanitized record per line, in the [`trace-corpus-v1`](/trace-grab/reference/schema) shape. |
-| `manifest.json` | Corpus-level metadata: schema version, generator, digest, warnings. |
-| `policy.yaml` | A copy of the policy that produced this bundle (or the default, if none was given). |
-| `report.md` | Observed field paths and their dispositions, for review before you send anything. |
+| `corpus.jsonl` | One sanitized record on each line, in the [`trace-corpus-v1`](/trace-grab/reference/schema) shape. |
+| `manifest.json` | Metadata for the corpus: schema version, generator, digest, and warnings. |
+| `policy.yaml` | A copy of the policy that produced this bundle. If you gave no policy, this is the default policy. |
+| `report.md` | The field paths that trace-grab saw and the action for each path. |
 
-## 2. Review before you send it
+## 2. Review the report
 
-Read `report.md` in the output directory. It lists every field path `trace-grab` observed and
-what happened to it — tokenized, revealed, dropped, or passed by default — so you can confirm
-the result before transfer.
+Open `report.md` in the output directory. It lists every field path that trace-grab saw. For each path, it gives the action: tokenized, revealed, dropped, or passed by default.
 
-## 3. Verify a specific value never leaked
+Read this report before you send anything.
 
-`check` looks up a value's token in a finished bundle and searches for any plaintext
-occurrence, exiting non-zero if it finds one — useful for gating CI on a known-sensitive
-value:
+## 3. Check one value
+
+Run `check` to look up the token for a value in the finished bundle. It also searches the bundle for the plaintext value.
 
 ```sh
 npx @emetlabs/trace-grab check --value "alice@corp.com" ./corpus
 ```
 
+If the value does not appear in plaintext, the output looks like this:
+
 ```txt
 appears as TOK_88b0e13a5d in 14 records; never appears in plaintext
 ```
 
-## 4. Send the bundle
-
-There is no upload command — see [Sending your corpus](/trace-grab/transfer) for how to
-transfer the bundle yourself.
-
 ## Next steps
 
-- Narrow the default with [policy configuration](/trace-grab/policy) if a field needs to stay
-  in plaintext or be dropped entirely.
-- Read the [threat model](/trace-grab/threat-model) to understand what tokenization does and
-  does not protect against.
+- To send the bundle, read [Sending your corpus](/trace-grab/transfer).
+- To keep a field in plaintext or drop it, read [Policy configuration](/trace-grab/policy).
+- To learn what tokenization does not protect against, read the [threat model](/trace-grab/threat-model).
+- To pull records from the LangSmith API, read [Sources](/trace-grab/sources).

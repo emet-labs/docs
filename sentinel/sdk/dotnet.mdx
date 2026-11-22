@@ -1,0 +1,124 @@
+---
+title: ".NET SDK"
+description: "Install, configure, and use the .NET Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Package name | `Sentinel.Probe.Sdk` |
+| Version | 0.1.0 |
+| Runtime | .NET 10 (`net10.0`) |
+| Built on | `System.Diagnostics.Activity`, OpenTelemetry .NET 1.17.0, `Google.Protobuf` 3.33.4 |
+| Source | `emet-labs/sentinel-probe-dotnet` on GitHub |
+
+## Install
+
+The package is not on NuGet. Build it from the public mirror. The mirror carries the generated protobuf types and the lock files.
+
+```sh
+git clone https://github.com/emet-labs/sentinel-probe-dotnet.git
+cd sentinel-probe-dotnet
+dotnet restore --locked-mode Sentinel.Probe.Sdk.sln
+dotnet build --no-restore Sentinel.Probe.Sdk.sln
+```
+
+Then reference the built project or assembly from your application.
+
+## Set up a Probe
+
+The SDK exports each ended `Activity` as an Event. Add two processors to your `TracerProvider`: one that stamps the slot, and one that exports.
+
+```csharp
+var exporter = new OtlpExporter("http://127.0.0.1:8080");
+var sequence = new SequenceAllocator();
+var filters = new FilterStore();
+
+var processor = new OtlpExportingSpanProcessor(new OtlpExportingSpanProcessorOptions
+{
+    SourceHandle = "shop-payment",
+    Sequence = sequence,
+    Exporter = exporter,
+    SchemaVersion = "shop-v1",
+    Filters = filters,
+});
+
+using var provider = Sdk.CreateTracerProviderBuilder()
+    .AddSource("shop-payment")
+    .AddProcessor(new SequenceStampingProcessor(sequence))
+    .AddProcessor(processor)
+    .Build();
+
+using var heartbeat = new CompletenessHeartbeat(
+    sequence,
+    (signal, ct) => exporter.ExportCompletenessAsync("shop-payment", signal, ct),
+    filterEpoch: filters.Epoch);
+heartbeat.Start();
+
+var source = new ActivitySource("shop-payment");
+using var activity = ProbeActivities.StartEvent(source, "payment.charge.completed");
+activity?.Stop();
+```
+
+On shutdown, dispose the provider first. Then call `await processor.ShutdownAsync(heartbeat, ct)`. This call drains the queue and sends the final heartbeat.
+
+## Configuration
+
+`OtlpExportingSpanProcessorOptions` configures the processor.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `SourceHandle` | The `x-sentinel-source-handle` value. Required. | none |
+| `Sequence` | The `SequenceAllocator`. Required. | none |
+| `Exporter` | The `OtlpExporter`. Required. | none |
+| `SchemaVersion` | The `sentinel.schema.version` of each Event. Required. | none |
+| `Filters` | The held Event Filter. An Event that it drops is marked filtered. | none |
+| `ClaimedSensitivity` | The claimed sensitivity of each Event. | `Internal` |
+| `ClaimedCapabilities` | The claimed capabilities of each Event. | empty |
+| `EventId` | A function from a slot to an Event id, used when the activity has no `sentinel.event.id` tag. | `{handle}:{epoch}:{number}` |
+| `AllowUnattributedRemoteParent` | Export a span with a non-Probe remote parent as a causal root. | `false` |
+| `QueueCapacity` | The queue size. | 4096 |
+| `MaxBatch` | Events in one request. | 32 |
+| `MaxAttempts` | Attempts for each batch, including the first. | 5 |
+| `RetryBaseDelay`, `RetryMaxDelay` | The retry delay and its cap. | 100 ms, 5 s |
+| `OnError` | Receives an `ExportFailure` with its kind, error, and slots. | none |
+| `Log`, `LogInterval` | A rate-limited log function and its gap. | 10 s |
+
+`new OtlpExporter(url, http, resourceAttributes)` takes an optional `HttpClient` and OTLP resource attributes such as `service.name`. A non-2xx answer throws an `OtlpExportException`. Its `IsTransient` property is true for no response, a timeout, and HTTP 408, 425, 429, 500, 502, 503, and 504.
+
+`CompletenessHeartbeat` takes an `interval` of `TimeSpan.Zero` or 1 s to 59.999 s. The default is 15 s. `DeclareIdle()` and `DeclareActive()` set the activity.
+
+`SequenceAllocator` takes a `timeProvider`, an `epoch`, and a `previousEpoch`. Persist the last epoch and pass it as `previousEpoch` if your clock can step backward.
+
+`OtlpLogReceiver.Start()` binds to loopback on a free port. `OtlpLogReceiver.Start("0.0.0.0", 9300)` binds for a container.
+
+## Span-to-Event mapping
+
+- The activity name becomes the Event kind.
+- `ProbeActivities.StartEvent(source, name, kind, parent, parentEventId)` starts the Event activity.
+- .NET parents a new activity to `Activity.Current`. The helper clears it for the start and restores it. Without `parent`, it uses the ambient activity. If the ambient activity is a Probe Event, it becomes the local parent and its id becomes the parent Event id. Any other ambient activity, such as an inbound request, becomes a remote parent without an Event id.
+- `SequenceStampingProcessor` stamps `sentinel.sequence.epoch` and `sentinel.sequence.number` when the activity starts. An activity that carries both keeps its slot.
+- The export processor reads tags from `Activity.TagObjects`, so all tag types round-trip.
+- A span with a remote parent and no parent Event id is refused. Set `AllowUnattributedRemoteParent` to export it as a causal root. A local parent without the id is always refused.
+- A missing predecessor id fails the export. A span id is never used in its place.
+
+## Parent Event id propagation
+
+```csharp
+ParentEventPropagation.InjectParentEventId(headers, eventId);
+var parent = ParentEventPropagation.ExtractParentEventId(headers);
+var activity = ProbeActivities.StartEvent(source, "order.ship.requested", parentEventId: parent);
+```
+
+- The header is `x-sentinel-parent-event-id`. `ParentEventPropagation.ParentEventIdHeader` holds its name.
+- Extract falls back to the `sentinel` member of `tracestate`.
+- Dictionary carriers (names match without case sensitivity) and `HttpHeaders` work directly. `Inject` and `Extract` take a getter or setter for other carriers, such as ASP.NET `IHeaderDictionary` and Kafka headers.
+
+## Known limits
+
+- The receiver keeps received Event Filters in `receiver.Filters`. It has no listener. Read the list and call `FilterStore.Set` yourself.
+- Filtered ranges keep their Filter epoch, but the SDK does not declare them on the wire yet. A filtered slot does not advance `complete_through`.
+- The allocator does not retry exports. The export processor retries within its queue.
+- The enforcement gate exists in the SDK. Sentinel does not serve decisions, so the gate cannot block a real action.
+- The generated protobuf types are not committed in the Sentinel repository. Use the public mirror.

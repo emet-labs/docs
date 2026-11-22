@@ -1,0 +1,144 @@
+---
+title: "Rust SDK"
+description: "Install, configure, and use the Rust Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Crate | `sentinel-probe-sdk` |
+| Version | 0.1.0-rc.3 |
+| Runtime | Rust 1.96 or later, edition 2021 |
+| Built on | `opentelemetry` and `opentelemetry_sdk` 0.33.1, `ureq` 3.4.2, `tiny_http` |
+| Source | `sdk/rust` in the Sentinel repository |
+
+## Install
+
+The crate is not on crates.io. The manifest names `emet-labs/sentinel-probe-rust` as its repository. That public mirror did not exist when this page was written. Use the crate from a Sentinel checkout.
+
+The crate is its own Cargo workspace root. Its generated protobuf types are staged from `gen/rust`. Run the staging script, then add a path dependency:
+
+```sh
+tools/stage-rust-sdk.sh
+cargo add sentinel-probe-sdk --path sdk/rust
+```
+
+Two optional features exist. The `http` feature adds a carrier for `http::HeaderMap`. The `tls` feature enables HTTPS endpoints. Both are off by default.
+
+## Set up a Probe
+
+The Rust SDK adds one span processor to your OpenTelemetry provider. It needs no async runtime. The exporter, the heartbeat, and the receiver each own one thread.
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use sentinel_probe_sdk::{
+    CompletenessHeartbeat, DeclarationSource, FilterStore, HeartbeatConfig, HostStamp,
+    HttpTransport, LogReceiver, ProbeSpanProcessor, ReceiverOptions, SequenceAllocator,
+    SequenceOptions,
+};
+
+let sentinel = "http://127.0.0.1:8080";
+let handle = "shop-payment";
+
+// The held Event Filter survives a restart.
+let filters = Arc::new(FilterStore::persisted("/var/lib/shop/probe-filter.pb"));
+
+let mut receiver_options = ReceiverOptions::new(Arc::clone(&filters));
+receiver_options.addr = "0.0.0.0:4319".to_owned();
+let receiver = LogReceiver::start(receiver_options)?;
+
+let sequence = Arc::new(SequenceAllocator::new(SequenceOptions::default())?);
+
+let processor = ProbeSpanProcessor::builder(sentinel, handle)
+    .sequence(Arc::clone(&sequence))
+    .filter_store(Arc::clone(&filters))
+    .host_stamp(HostStamp {
+        source_handle: handle.to_owned(),
+        schema_version: "shop-v1".to_owned(),
+        claimed_sensitivity: "SENSITIVITY_INTERNAL".to_owned(),
+    })
+    .build()?;
+let exporter = Arc::clone(processor.exporter());
+let provider = SdkTracerProvider::builder().with_span_processor(processor).build();
+let tracer = provider.tracer("shop-payment");
+
+let source: Arc<dyn DeclarationSource> = Arc::clone(&sequence) as Arc<dyn DeclarationSource>;
+let heartbeat_filters = Arc::clone(&filters);
+let heartbeat = CompletenessHeartbeat::start(HeartbeatConfig {
+    source: Some(source),
+    transport: Some(Arc::new(HttpTransport::new(sentinel, Duration::from_secs(5))?)),
+    source_handle: handle.to_owned(),
+    filter_epoch: Some(Arc::new(move || heartbeat_filters.epoch())),
+    ..HeartbeatConfig::default()
+})?;
+
+// The span name is the Event kind.
+let mut span = tracer.start("payment.charge.completed");
+span.end();
+
+// On a clean exit: let exports settle, then send the final heartbeat.
+let _ = exporter.flush(Duration::from_secs(5));
+let _ = heartbeat.shutdown();
+```
+
+The repository also holds a full example. Run it with `cargo run --example quickstart`. The example reads `SENTINEL_URL` (default `http://127.0.0.1:8080`) and `SENTINEL_SOURCE_HANDLE`.
+
+## Configuration
+
+`ExporterOptions` tunes the exporter. Pass it with `.options(...)` on the builder.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `queue_size` | Spans that wait to export. | 2048 |
+| `batch_size` | The most spans in one request. | 64 |
+| `retry` | A `RetryPolicy { max_attempts, base, cap }`. | 5, 100 ms, 5 s |
+| `retain_failed` | Failed spans kept for a later retry. 0 keeps none. | 1024 |
+| `retry_failed_interval` | How often kept spans are retried. | 30 s |
+| `request_timeout` | The timeout of the default transport. | 5 s |
+| `export` | Contract options, for example `allow_unattributed_remote_parent`. | strict |
+| `synchronous` | Export on the thread that ends the span, with one attempt. | `false` |
+| `on_error` | Receives every `ExportError`. It must not block. A panic in it is absorbed. | none |
+
+Other settings:
+
+- `HeartbeatConfig` takes `interval` (1 s to 59.999 s, default 15 s), `manual`, `filter_epoch`, `send`, `transport`, `source_handle`, and `on_error`.
+- `SequenceOptions` takes `epoch`, `previous_epoch`, and `now`.
+- `ReceiverOptions` takes `addr` (default `127.0.0.1:0`), `filter_store`, `on_verdict`, and `on_decision`. For a container, bind `0.0.0.0:4319`.
+- `FilterStore::persisted(path)` keeps the held Filter in a file. `FilterStore::new(initial)` keeps it in memory.
+
+## Span-to-Event mapping
+
+- The span name becomes the Event kind.
+- `on_start` allocates the slot and stamps the reserved keys. `on_end` queues the span. Neither can panic into your span path, and neither blocks.
+- `host_stamp` stamps the Event id, the schema version, and the claimed sensitivity. The `HostStamp.source_handle` prefixes generated Event ids.
+- The processor allows eight `sentinel.*` keys. They are the Event id, the parent Event id, the two sequence keys, the schema version, the acknowledged Filter epoch, the claimed sensitivity, and the claimed capabilities. Any other `sentinel.*` key is refused. Span events can carry none.
+- The `acknowledge_filter(store)` builder method reads the Filter epoch but never drops a span. Use it while the Event kinds of the Filter are not the span names of your service.
+
+## Parent Event id propagation
+
+```rust
+use sentinel_probe_sdk::{extract_parent_event_id, inject_parent_event_id};
+
+inject_parent_event_id(&mut carrier, &event_id);
+let parent = extract_parent_event_id(&carrier);
+```
+
+- The header is `x-sentinel-parent-event-id`. The constant `PARENT_EVENT_ID_HEADER` holds its name.
+- `extract_parent_event_id` falls back to the `sentinel` entry of `tracestate`.
+- A `Carrier` trait abstracts the header container. With the `http` feature, `http::HeaderMap` is a carrier.
+- `processor.event_ids().of(&context)` returns the Event id that the processor stamped on the span of a context.
+
+## Known limits
+
+- The SDK has no blocking enforcement. It has no Decide gate. It decodes pushed `DecideResponse` logs and passes them to the optional `on_decision` callback.
+- The SDK supports OTLP/HTTP with protobuf bodies only. It has no OTLP/gRPC, no JSON, and no gzip.
+- The public source mirror does not exist yet.
+- The version is a release candidate (`0.1.0-rc.3`).
+- A span that the sampler drops never reaches the processor. Keep the sampler always on.
+- The receiver has no authentication. Bind a non-loopback address only on a private network.
+- When a request with several spans is refused, the exporter sends the spans one at a time. Only the refused slot stays failed.

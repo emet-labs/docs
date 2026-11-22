@@ -1,0 +1,120 @@
+---
+title: "JVM SDK"
+description: "Install, configure, and use the JVM (Kotlin) Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Maven coordinates | `dev.emet.sentinel:sentinel-probe-sdk-jvm` |
+| Version | 0.1.0 |
+| Runtime | JDK 21 or later |
+| Language | Kotlin. You can call it from Java. |
+| Built on | OpenTelemetry Java SDK 1.47, `protobuf-java` 4.33.4 |
+| Source | `emet-labs/sentinel-probe-jvm` on GitHub |
+
+## Install
+
+The library is not on Maven Central. Build it from the public mirror. The mirror carries the generated protobuf types.
+
+```sh
+git clone https://github.com/emet-labs/sentinel-probe-jvm.git
+cd sentinel-probe-jvm
+./gradlew build
+```
+
+To publish the build to a local Maven directory, pass `-PsentinelMavenRepo=<dir>` or set `SENTINEL_MAVEN_REPO`. Then depend on `dev.emet.sentinel:sentinel-probe-sdk-jvm:0.1.0` from that directory.
+
+## Set up a Probe
+
+The host builds the `SdkTracerProvider`. The SDK adds a span processor.
+
+```kotlin
+val exporter = OtlpHttpExporter("http://127.0.0.1:8080", "shop-payment")
+val sequence = SequenceAllocator()
+val filters = FilterStore.newFilterStore()
+
+val receiver = OtlpLogReceiver("127.0.0.1", 4319)
+receiver.addFilterListener { filters.set(it) }
+
+val processor = OtlpExportingSpanProcessor(
+    exporter,
+    sequence,
+    ExportOptions(filter = { filters.get() }),
+)
+val provider = SdkTracerProvider.builder().addSpanProcessor(processor).build()
+
+val heartbeat = CompletenessHeartbeat(
+    sequence,
+    send = exporter::exportCompleteness,
+    filterEpoch = filters::epoch,
+)
+heartbeat.start()
+```
+
+Then create spans with `provider.get("shop-payment")`. Set these attributes on each span before it ends:
+
+- `sentinel.event.id` (string)
+- `sentinel.schema.version` (string)
+- `sentinel.acknowledged_filter_epoch` (long)
+- `sentinel.claimed_sensitivity` (string, for example `SENSITIVITY_INTERNAL`)
+- `sentinel.parent.event.id` (string), when a causal parent exists
+
+The processor stamps `sentinel.sequence.epoch` and `sentinel.sequence.number` when the span starts.
+
+On shutdown, flush the processor, then call `heartbeat.shutdown()`. Then close the provider and the receiver.
+
+## Configuration
+
+`ExportOptions` tunes the processor.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `allowUnattributedRemoteParent` | Export a span with a non-Probe remote parent as a causal root. | `false` |
+| `filter` | A supplier of the held Event Filter, for example `{ filters.get() }`. | none |
+| `synchronous` | Post once in `onEnd`, with no queue and no retry. For tests. | `false` |
+| `queueCapacity` | The spans that wait for the worker. | 8192 |
+| `maxAttempts` | Posts for each span, including the first. | 5 |
+| `initialBackoffMillis` | The first retry step. It doubles with jitter. | 100 |
+| `maxBackoffMillis` | The cap on every wait. | 5000 |
+| `parkedRetryCapacity` | Failed spans kept for a later retry. | 1024 |
+| `parkedRetryIntervalMillis` | How long the queue stays idle before parked spans are posted again. | 5000 |
+| `shutdownTimeoutMillis` | How long `shutdown` waits for the drain. | 5000 |
+| `logIntervalMillis` | The minimum gap between log lines. 0 logs nothing. | 10000 |
+| `onError` | Receives every export problem. It must not block. | none |
+
+Other constructors take these values:
+
+- `OtlpHttpExporter(baseUrl, sourceHandle, httpClient)` uses a Java `HttpClient` with a 2 second connect timeout by default. A blank handle is refused.
+- `SequenceAllocator(nowUnixNanos, epoch, previousEpoch)`.
+- `CompletenessHeartbeat(sequence, send, filterEpoch, nowUnixNanos, intervalMillis, scheduler, onError)`. `intervalMillis` is 0, or 1000 to 59999. The default is 15000.
+- `OtlpLogReceiver(bindHost, bindPort)`. The default host is `127.0.0.1` and the default port is 0, a free port. For a container, use `OtlpLogReceiver("0.0.0.0", 4318)`.
+
+## Span-to-Event mapping
+
+- The span name becomes the Event kind. The processor exports a span when it ends.
+- The exporter refuses a span that lacks `sentinel.event.id`, `sentinel.schema.version`, the two sequence attributes, `sentinel.acknowledged_filter_epoch`, or `sentinel.claimed_sensitivity`. It refuses a blank id and an unspecified sensitivity.
+- With a `SequenceAllocator`, the processor counts the attempt and allocates the slot in `onStart`. It skips a span that already carries both sequence attributes.
+- A span link names an extra causal parent. The link needs its own `sentinel.event.id`.
+- A remote parent without `sentinel.parent.event.id` is refused. Set `allowUnattributedRemoteParent` for callers that are not Probes. A local parent without the id is always refused.
+- `ProbeSpanProcessor(onEnd, onError)` is a second processor. It gives each ended span to a callback that you write. It does not export.
+
+## Parent Event id propagation
+
+```kotlin
+injectParentEventId(headers, eventId)          // MutableMap<String, String>
+val parent = extractParentEventId(headers)     // Map<String, String>
+```
+
+Both functions use the `x-sentinel-parent-event-id` header. They match names without case sensitivity. `extractParentEventId` falls back to the `sentinel` member of `tracestate`. Overloads take a getter or a setter function for other carriers, such as an HTTP request builder or Kafka headers.
+
+`injectParentEventId` returns `false` when the id is blank or holds a control character.
+
+## Known limits
+
+- The SDK does not shut down the `SdkTracerProvider`. You own its lifecycle.
+- The JVM SDK has no helper that stamps the Event id, schema version, or sensitivity. You set them on each span.
+- The synchronous export mode makes a single attempt.
+- A span that the host sampler drops never reaches the processor. Keep the sampler always on.
+- The log receiver has no authentication. Bind a non-loopback host only on a private network.
