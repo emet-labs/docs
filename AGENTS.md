@@ -35,9 +35,7 @@
 
 ## Content boundaries
 
-- Sentinel is pre-launch: don't document internals, architecture, component names, or ADR
-  content. Sentinel pages are placeholders (product-facing section names, "Coming soon" body)
-  until the product ships.
+- Sentinel is pre-launch, but its section is now written. The pages describe how Sentinel works, how to connect a Probe, each Probe SDK, and the HTTP routes. State only what the code does today. Verify every command, flag, route, and name against the Sentinel repository. Say plainly what is not built (detect-only, no authentication, no multi-tenancy, SDKs not on public registries). Do not cite ADR numbers or invent roadmap dates.
 - trace-grab is not framed as a commercial product. Its docs should read as an invitation to
   donate trace data to Emet Labs' research, sanitized and auditable before you send anything —
   not as a sales pitch or a general-purpose tool.

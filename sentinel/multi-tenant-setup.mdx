@@ -1,6 +1,37 @@
 ---
 title: "Multi-tenant setup"
-description: "Set up Sentinel for more than one team, environment, or organization."
+description: "What Sentinel supports today for more than one team, environment, or organization. Multi-tenancy is not implemented."
 ---
 
-Coming soon.
+Sentinel has no multi-tenant mode today. This page states what exists and what does not. It describes no setup, because no setup exists.
+
+## What the code supports
+
+| Topic | Today |
+| --- | --- |
+| Tenant isolation | Not implemented. The store schema has no tenant column. Postgres uses no row-level security policy. |
+| Authentication | None. Periphery has no bearer-token authentication. Sources have no per-source credentials. |
+| Authorization | None. Every caller of the HTTP API can read and write everything that the API exposes. |
+| Deployments | One periphery process serves one store and one source registry. |
+| Grouping | The registry key `monitored_application_id` groups sources by Monitored Application. It does not isolate data. |
+| Topology | The registry key `topology_id` is recorded on each source. Nothing reads it yet. |
+
+## What looks like tenancy but is not
+
+The Data Class `monitored-Tenant` is not a tenant boundary. It marks Events that come from your own deployment. The other class is `Corpus`. Every Event in one installation shares one Data Class scheme. The class does not separate one team from another.
+
+## What you can do today
+
+To keep two teams or two environments apart, run two separate installations. Give each one:
+
+- Its own periphery process, with its own `SENTINEL_LISTEN` address.
+- Its own Postgres database.
+- Its own source registry file.
+
+Keep every installation on loopback or on a private network. A second installation does not add authentication. See [Installation](/sentinel/installation) for the settings.
+
+This is a deployment choice. It is not a feature of Sentinel. Sentinel does not check that the installations stay apart.
+
+## What is planned
+
+A design record describes tenant isolation with a tenant column and Postgres row-level security. The product is now distributed as a self-hosted server. This page does not give a date for tenant isolation. No code for it exists in the repository.

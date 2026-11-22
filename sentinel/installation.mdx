@@ -140,7 +140,7 @@ just run
 
 The dashboard development server listens on `127.0.0.1:5173`. It forwards `/v1`, `/healthz`, and `/readyz` to `127.0.0.1:8080`. To forward to another address, set `SENTINEL_WALKTHROUGH_PROXY_TARGET`. To change the bind address, set `SENTINEL_DASHBOARD_HOST` or `SENTINEL_DASHBOARD_PORT`.
 
-Open <http://127.0.0.1:5173>. Every page reads live data from periphery. The dashboard contains no sample data.
+Open `http://127.0.0.1:5173`. Every page reads live data from periphery. The dashboard contains no sample data.
 
 A packaged build serves the dashboard from periphery itself. In that case, open `http://127.0.0.1:8080`.
 

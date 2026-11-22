@@ -3,7 +3,7 @@ title: "Probe SDKs"
 description: "What every Probe SDK does the same way, and a comparison of the seven SDKs."
 ---
 
-A Probe SDK puts a Probe in your service. Seven SDKs exist. They share one wire contract and one set of rules. A deployment of mixed languages therefore produces evidence that Sentinel can compare.
+A Probe SDK puts a Probe in your application. Seven SDKs exist. They share one wire contract and one set of rules. A deployment of mixed languages therefore produces evidence that Sentinel can compare.
 
 The wire is OTLP/HTTP with protobuf bodies. A Probe sends ended spans to `POST /v1/traces` and completeness heartbeats to `POST /v1/logs`. Both requests carry the `x-sentinel-source-handle` header. Sentinel sends Event Filters and Verdicts back to the Probe as OTLP logs.
 

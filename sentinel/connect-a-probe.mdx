@@ -1,14 +1,14 @@
 ---
 title: "Connect a Probe"
-description: "Register a source, instrument a service with a Probe SDK, and check that Events and completeness arrive."
+description: "Register a source, instrument an application with a Probe SDK, and check that Events and completeness arrive."
 ---
 
-This guide shows how to send Events from one service to Sentinel. You register the service as a source. You add a Probe to the service. Then you check the result in the dashboard.
+This guide shows how to send Events from one application to Sentinel. You register the application as a source. You add a Probe to the application. Then you check the result in the dashboard.
 
 ## Before you start
 
 - Periphery runs. See [Installation](/sentinel/installation).
-- You chose one of the seven [Probe SDKs](/sentinel/sdk/index) for your service.
+- You chose one of the seven [Probe SDKs](/sentinel/sdk/index) for your application.
 - You know the base URL of periphery, for example `http://127.0.0.1:8080`.
 
 <Warning>
@@ -19,7 +19,7 @@ No HTTP route registers a source. The registry is a JSON file that you give to p
 
 A source handle is the value of the `x-sentinel-source-handle` header. Each Probe sends its handle with every request. Periphery looks the handle up in the source registry. The registry gives each Event its application id, source id, Source Tier, and capabilities. The Probe cannot choose them.
 
-1. Choose a handle for the service. Use visible ASCII with no spaces. Periphery matches it with case sensitivity.
+1. Choose a handle for the application. Use visible ASCII with no spaces. Periphery matches it with case sensitivity.
 2. Decide the Source Tier. See the table below.
 3. Write the registry file.
 
@@ -89,7 +89,7 @@ A change of tier or capabilities takes effect when the source opens a new Sequen
 
 Removing a handle is not a way to revoke a source. Stored evidence and Verdicts stay.
 
-## Add the Probe to your service
+## Add the Probe to your application
 
 Each SDK needs the same inputs:
 
@@ -126,7 +126,7 @@ Follow these rules in every language:
 - Name each span with the Event kind that your Specification will use. The span name becomes the Event kind.
 - End the span to send the Event. An open span is not an Event.
 - Create two Events for a request and its completion.
-- Pass the parent Event id to each Event that a previous Event caused. Across services, put the id in the `x-sentinel-parent-event-id` header.
+- Pass the parent Event id to each Event that a previous Event caused. Across applications, put the id in the `x-sentinel-parent-event-id` header.
 - Call the shutdown method on exit. It sends a final heartbeat.
 
 <Note>
@@ -149,7 +149,7 @@ A Probe that keeps its Filter in memory forgets it on restart and acknowledges e
 1. Open the **Sources** page. The route is `/sources`. Find your source. Check these values:
    - The Source Tier matches the registry.
    - The activity is not silent.
-   - `last_emitted` rises when your service emits Events.
+   - `last_emitted` rises when your application emits Events.
    - `complete_through` reaches `last_emitted` when exports succeed.
 2. Open the **Traces** page. The route is `/traces`. Choose the Data Class `tenant`. Events from your Probe use this class. Find your Events.
 3. Check the coverage of each Trace. A Trace is `partial` when a causal predecessor is missing. Fix the parent Event id propagation.

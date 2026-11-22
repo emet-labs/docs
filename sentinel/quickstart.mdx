@@ -5,7 +5,7 @@ description: "Run Sentinel on your machine and read your first Verdicts, from re
 
 In this tutorial, you run Sentinel on your machine. You read Verdicts from recorded evidence. Then you run a live demo and watch a Verdict change as evidence arrives.
 
-The tutorial does not connect your own service. To do that, see [Connect a Probe](/sentinel/connect-a-probe).
+The tutorial does not connect your own application. To do that, see [Connect a Probe](/sentinel/connect-a-probe).
 
 <Note>
 The recorded walkthrough and the live demo are demonstration tools. They use sample evidence from a test shop. They are not evidence from a real deployment.
@@ -53,7 +53,7 @@ The first run builds the control plane and the dashboard. It takes some time.
 
 The recipe starts two processes. Periphery listens on `127.0.0.1:8080` with an in-memory store. The dashboard listens on `127.0.0.1:5173`.
 
-Open <http://127.0.0.1:5173/walkthrough>. The page title is **Recorded walkthrough**.
+Open `http://127.0.0.1:5173/walkthrough`. The page title is **Recorded walkthrough**.
 
 ## 4. Run the four scenarios
 
@@ -84,7 +84,7 @@ The live demo needs port 8080. Stop the walkthrough before you continue.
 
 ## 6. Run the live demo
 
-The live demo runs three small processes. They are an approval service, a broker, and an executor. Each process sends real Events through the TypeScript Probe. An AI agent changes production with or without an approval.
+The live demo runs three small processes. They are an approval process, a broker, and an executor. Each process sends real Events through the TypeScript Probe. An AI agent changes production with or without an approval.
 
 Open an interactive Devbox shell. Then start the demo:
 
@@ -95,16 +95,16 @@ just demo
 
 The demo runs in the foreground. It starts a temporary Postgres database and periphery on `127.0.0.1:8080`. It refuses to start if port 8080 is busy.
 
-Open <http://127.0.0.1:8080/verdicts>. Press Enter in the terminal to run each beat.
+Open `http://127.0.0.1:8080/verdicts`. Press Enter in the terminal to run each beat.
 
 | Beat | Verdict that you see |
 | --- | --- |
 | Valid approval | `Satisfy`, `Authoritative` |
 | Wrong target | `Violate`, `Provisional` |
 | Revoked approval | A second Specification reports `Violate`. The first Specification still reports `Satisfy` for the same Binding. |
-| Stop the approval service | `Inconclusive`, `Provisional` |
+| Stop the approval process | `Inconclusive`, `Provisional` |
 
-The last beat shows the main rule of Sentinel. The approval service dies before it sends its Event. The executor still acts. Sentinel does not report a `Satisfy`. It reports `Inconclusive` and names the source that has not delivered. Open the Verdict and read **Uncertainty** in the Assurance Envelope. Then open <http://127.0.0.1:8080/sources>. The approval source shows an open Watermark.
+The last beat shows the main rule of Sentinel. The approval process dies before it sends its Event. The executor still acts. Sentinel does not report a `Satisfy`. It reports `Inconclusive` and names the source that has not delivered. Open the Verdict and read **Uncertainty** in the Assurance Envelope. Then open `http://127.0.0.1:8080/sources`. The approval source shows an open Watermark.
 
 ## 7. Stop the demo
 
@@ -116,4 +116,4 @@ Press Ctrl-C in the terminal. The demo stops every process and removes its datab
 
 - Read [How Sentinel works](/sentinel/how-it-works) to learn why each Verdict came out as it did.
 - Follow [Installation](/sentinel/installation) to run Sentinel with a persistent database.
-- Follow [Connect a Probe](/sentinel/connect-a-probe) to send Events from your own service.
+- Follow [Connect a Probe](/sentinel/connect-a-probe) to send Events from your own application.

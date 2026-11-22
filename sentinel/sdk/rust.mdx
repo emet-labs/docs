@@ -116,7 +116,7 @@ Other settings:
 - The span name becomes the Event kind.
 - `on_start` allocates the slot and stamps the reserved keys. `on_end` queues the span. Neither can panic into your span path, and neither blocks.
 - `host_stamp` stamps the Event id, the schema version, and the claimed sensitivity. The `HostStamp.source_handle` prefixes generated Event ids.
-- The processor allows these `sentinel.*` keys: the Event id, the parent Event id, the two sequence keys, the schema version, the acknowledged Filter epoch, the claimed sensitivity, and the claimed capabilities. Any other `sentinel.*` key is refused. Span events can carry none.
+- The processor allows eight `sentinel.*` keys. They are the Event id, the parent Event id, the two sequence keys, the schema version, the acknowledged Filter epoch, the claimed sensitivity, and the claimed capabilities. Any other `sentinel.*` key is refused. Span events can carry none.
 - The `acknowledge_filter(store)` builder method reads the Filter epoch but never drops a span. Use it while the Event kinds of the Filter are not the span names of your service.
 
 ## Parent Event id propagation

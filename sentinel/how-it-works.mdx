@@ -1,9 +1,9 @@
 ---
 title: "How Sentinel works"
-description: "How evidence moves from your services to a Verdict, and why Sentinel reports Inconclusive when evidence is missing."
+description: "How evidence moves from your applications to a Verdict, and why Sentinel reports Inconclusive when evidence is missing."
 ---
 
-This page explains how Sentinel turns activity in your services into a Verdict. It also explains why Sentinel sometimes refuses to give a conclusion.
+This page explains how Sentinel turns activity in your applications into a Verdict. It also explains why Sentinel sometimes refuses to give a conclusion.
 
 ## The path of evidence
 
@@ -36,7 +36,7 @@ Sentinel does not compare these two times unless it knows the clock relationship
 
 Sentinel does not order Events by timestamp. It orders them by cause.
 
-Each Event can name a causal parent. A Probe puts the parent Event id on the calls that leave a service. The next service reads the id and uses it as the parent of its own Event.
+Each Event can name a causal parent. A Probe puts the parent Event id on the calls that leave an application. The next application reads the id and uses it as the parent of its own Event.
 
 A Trace is the graph of Events that cause each other. Two Events with no causal path between them are Concurrent. Sentinel does not invent an order for Concurrent Events.
 

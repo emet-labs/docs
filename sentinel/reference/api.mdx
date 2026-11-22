@@ -1,6 +1,335 @@
 ---
 title: "API reference"
-description: "Endpoints, authentication, and request and response formats."
+description: "The HTTP routes of the Sentinel control plane (periphery), with methods, paths, request bodies, responses, and error kinds."
 ---
 
-Coming soon.
+This page lists the HTTP routes that periphery serves today. The data comes from the periphery source code.
+
+## Conventions
+
+| Topic | Rule |
+| --- | --- |
+| Base URL | `http://127.0.0.1:8080`. Set `SENTINEL_LISTEN` to change it. |
+| Authentication | None. Do not expose periphery on a public interface. |
+| Content type | JSON, except `POST /v1/traces` and `POST /v1/logs`. They take OTLP protobuf. |
+| Error body | `{ "kind": "<machine kind>", "message": "<text>" }`. |
+| Lists | A list returns the first page only. A `note` field says so. Cursor pagination is not built yet. |
+| Large integers | Periphery sends 64-bit integers as bare JSON numbers. Parse them with a reader that keeps full precision. |
+| Observation time | A write that needs an instant takes `observed_at`: `{ "sentinel_clock_id": "sentinel", "nanoseconds": <integer> }`. Periphery does not read a wall clock for these routes. |
+
+### Startup gate
+
+Periphery binds the port before it replays state from retained evidence. During the replay:
+
+- `GET /healthz` answers 200.
+- `GET /readyz` answers 503 with the kind `reconstructing`.
+- These routes answer 503 `reconstructing` with a `Retry-After: 1` header: `POST /v1/traces`, `POST /v1/logs`, `POST /v1/evidence/capture-envelope`, `POST /v1/evaluate`, `POST /v1/filters/bootstrap-cat1`, `POST /v1/filters/advance-readiness`, `POST /v1/filters/rearm-activation`, and `POST /v1/demo/walkthrough/*`.
+- Read routes answer from the store.
+
+## Route index
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /healthz` | Process liveness. |
+| `GET /readyz` | Readiness after the replay. |
+| `POST /v1/traces` | Ingest Events as OTLP protobuf. |
+| `POST /v1/logs` | Ingest completeness signals as OTLP protobuf. |
+| `POST /v1/evidence/capture-envelope` | Ingest a recorded `capture-envelope-v1` body. |
+| `GET /v1/sources` | List sources and their completeness and liveness. |
+| `GET /v1/traces` | List retained Traces of one Data Class. |
+| `GET /v1/filters/current` | Read the current Event Filter. |
+| `GET /v1/filters/{epoch}` | Read one published Event Filter. |
+| `POST /v1/filters/bootstrap-cat1` | Publish a sample Specification. |
+| `POST /v1/filters/advance-readiness` | Move Specifications from Warming to Active. |
+| `POST /v1/filters/rearm-activation` | Restamp the activation barrier. |
+| `GET /v1/patterns` | List the Pattern catalogue. |
+| `GET /v1/patterns/{pattern_id}` | Read one Pattern. |
+| `GET /v1/candidates` | List Candidates. |
+| `POST /v1/candidates` | Propose a Candidate. |
+| `GET /v1/candidates/{specification_id}/{specification_version}` | Read one Candidate. |
+| `POST /v1/candidates/{specification_id}/{specification_version}/review` | Promote or reject a Candidate. |
+| `POST /v1/candidates/{specification_id}/{specification_version}/warm` | Publish a Filter for a Candidate that needs new evidence. |
+| `POST /v1/evaluate` | Evaluate a Specification now. |
+| `GET /v1/evaluations/queue` | Read the evaluation worker counters. |
+| `GET /v1/verdicts` | List Verdicts. |
+| `GET /v1/verdicts/{id}` | Read a Verdict and its Assurance Envelope. |
+| `GET /v1/verdicts/{id}/revisions` | List the revisions of a Verdict. |
+| `GET /v1/verdicts/{id}/witness` | Read the witness graph of a Verdict. |
+| `GET /v1/verdicts/{id}/witness/events` | Read named witness Events. |
+| `GET /v1/demo/walkthrough` | The recorded walkthrough catalogue. |
+| `POST /v1/demo/walkthrough/runs` | Run one walkthrough scenario. |
+| `POST /v1/demo/walkthrough/reset` | Reset the in-memory store. |
+
+Any other path serves the dashboard files when `SENTINEL_DASHBOARD_DIR` is set.
+
+The gRPC service `SentinelDecisionService` is not registered. Periphery serves no decision route.
+
+## Health
+
+### `GET /healthz`
+
+Answers 200 with `{ "status": "ok" }`.
+
+### `GET /readyz`
+
+Answers 200 with `"status": "ready"`, `store_schema_version`, and `reconstruction`. The value of `reconstruction` is `complete` or `completed_with_errors`. With `completed_with_errors`, the field `failed_specifications` names each Specification that produced no Verdict.
+
+Answers 503 with `"status": "not_ready"` and one of these kinds: `reconstructing`, `reconstruction_failed`, `schema_mismatch`, or `store_not_ready`.
+
+## Evidence ingest
+
+### `POST /v1/traces`
+
+Request:
+
+- The header `x-sentinel-source-handle` is required.
+- `Content-Type: application/x-protobuf`.
+- `Content-Encoding` is absent, `identity`, or `gzip`. A gzip body can inflate to at most 8 MiB.
+- The body is an OTLP `ExportTraceServiceRequest`.
+
+Response: 200 with an OTLP response body. A duplicate delivery is idempotent. `partial_success.rejected_spans` counts conflicts and refusals, not duplicates.
+
+A 200 means that periphery stored the evidence. Evaluation runs afterward on a worker.
+
+Periphery stores Events with the Data Class monitored-Tenant. It assigns the Source Tier, the application id, the source id, and the capabilities from the source registry. It assigns the Observation Time from its own clock.
+
+### `POST /v1/logs`
+
+Request: the same headers as `POST /v1/traces`. The body is an OTLP `ExportLogsRequest` that carries one producer completeness signal. Periphery refuses other payload types.
+
+Response: 200 with an empty OTLP body.
+
+### Errors on both routes
+
+| Status | Kind | Cause |
+| --- | --- | --- |
+| 400 | `otlp_decode` | The body is not valid OTLP, or a span breaks the contract. The message names the problem. |
+| 400 | `otlp_gzip` | The gzip body is invalid or inflates past the limit. |
+| 401 | `missing_source_handle` | The header is missing or blank. |
+| 403 | `unknown_source_handle` | The handle is not in the source registry, or the header holds more than one value. |
+| 409 | `non_monotonic_refused` | A completeness signal would regress a retained row or reopen a closed epoch. Periphery stores none of the signals in that request. |
+| 415 | `unsupported_media_type` | The content type is not `application/x-protobuf`. JSON and gRPC are refused. |
+| 415 | `unsupported_encoding` | The encoding is not identity or gzip. |
+| 503 | `store_unavailable` | The store cannot serve the request now. Send it again. |
+
+An Event above a close that its source already declared is not stored.
+
+### `POST /v1/evidence/capture-envelope`
+
+Request: a raw `capture-envelope-v1` JSON body. This route ingests recorded evidence.
+
+Response: 200 with `events_inserted`, `events_conflicted`, `events_above_closed_boundary`, and `sources_recorded`.
+
+Errors: 400 `capture_decode` and `capture_adapt`. 409 `corpus_data_class` for Corpus-class Events. 409 `non_monotonic_refused`.
+
+## Sources and Traces
+
+### `GET /v1/sources`
+
+Response: `items`, `published_filter_epoch`, and `note`. Each item has a `status` of `recorded` or `not-recorded`. A recorded item has these fields:
+
+- `source`: the identity of the source.
+- `source_tier`: `anchor` or `contributing`.
+- `activity` and `liveness`: whether the source reports, and whether it is silent.
+- `completeness`: `sequence_epoch`, `last_emitted`, `complete_through`, `gaps`, and `epoch_chain`.
+- `watermark` and `watermark_lag`.
+- `filter_acknowledgement`: the Filter epoch that the source acknowledged.
+- `capabilities`.
+
+Periphery classifies liveness at its own edge clock under the Liveness Floors.
+
+### `GET /v1/traces?data_class=tenant|corpus`
+
+The query parameter `data_class` is required. It has no default.
+
+Response: `data_class`, `read_coverage` (`complete` or `partial`), `items`, and `note`. Each item has a `derived_key`, a `coverage` (`closed` or `partial`), `events`, and `unresolved_predecessors`. Each Event has `id`, `source`, `kind`, `causal_predecessors`, `acknowledged_filter_epoch`, `source_tier`, and `occurrence`.
+
+Errors: 400 `data_class_required` and 400 `data_class_unrecognized`.
+
+## Event Filters
+
+### `GET /v1/filters/current`
+
+Response: `{ "filter": <Event Filter or null>, "note": "…" }`.
+
+### `GET /v1/filters/{epoch}`
+
+Response: the Event Filter that was published at that epoch. Errors: 400 `invalid_epoch` when the epoch is not an unsigned integer. 404 `not_found` when no Filter was published at the epoch.
+
+### `POST /v1/filters/bootstrap-cat1`
+
+Publishes the sample Specification `sagashop.p4.ship-requires-prior-charge`. It is for samples and tests. Request: `{ "observed_at": { … } }`. Response: `filter_epoch`, `specification_id`, and `note`.
+
+After the store write, periphery sends the Filter to the configured Probe log URLs. A failed send leaves the Filter published and the response a success.
+
+### `POST /v1/filters/advance-readiness`
+
+Request: `{}` or `{ "observed_at": { … } }`. Response: `filter`, `changed` (whether a Specification moved from Warming to Active), and `note`.
+
+A Specification moves only when the activation barrier and the liveness checks clear. The evaluation mode stays Shadow.
+
+### `POST /v1/filters/rearm-activation`
+
+Request: `{}` or `{ "observed_at": { … } }`.
+
+Republishes the current Filter at the next epoch. It restamps every activation barrier on the current Sequence Epoch of each required source. It sends the Filter to the Probes.
+
+Response: `filter_epoch`, `specifications`, and `note`. It answers 409 unless every required source acknowledged the current Filter epoch.
+
+## Patterns
+
+### `GET /v1/patterns`
+
+Response: `items` (every Pattern in this build) and `note`.
+
+### `GET /v1/patterns/{pattern_id}`
+
+Response: one Pattern. Errors: 404 `not_found`. A shape alias such as `precedence` is not a Pattern id. Use `precedence.approval`.
+
+## Candidates
+
+### `GET /v1/candidates`
+
+Response: `items` and `note` (first page only). Each item has `specification_id`, `specification_version`, `pattern_id`, `origin`, `source_kind`, `source_id`, `rationale`, `review_status`, `review_note`, `blockers`, `advisories`, `would_fire`, `would_fire_verdicts`, `would_fire_violate`, `would_fire_satisfy`, and `would_fire_inconclusive`. A Candidate that this build cannot rebuild carries the marker `unverifiable`.
+
+### `POST /v1/candidates`
+
+Proposes a Candidate. The request has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `pattern_id` | A Pattern id. |
+| `specification_id`, `specification_version` | The identity of the new Specification. |
+| `schema_version` | A well-formed schema identifier. |
+| `arguments` | A map of parameter name to value. A value is `{ "attribute_key": "…" }`, `{ "selector": { "kind": "…", "required_attributes": { … } } }`, `{ "sequence_lookback_bound": <n> }`, or `{ "count_threshold": <n> }`. |
+| `evidence` | A map of role to `{ "monitored_application": "…", "source": "…" }`. |
+| `artifacts` | A list of Intent Artifacts: `{ "id", "kind", "text" }`. A kind is `system-prompt`, `tool-schema`, `policy`, or `runbook`. |
+| `citations` | A list of `{ "artifact", "anchor" }`. |
+| `rationale` | A reason. It must not be blank. |
+| `corpus` | `happy`, `production-change`, `sagashop-platform`, or `retained`. |
+| `attested_traces` | Derived keys of attested Traces. Read only for `retained`. Default: empty. |
+
+`retained` is not released. Pull request 721 in the Sentinel repository adds it. A build without it answers 400 `unknown_corpus`.
+
+Response: 200 with the Candidate record and a `note`. Errors:
+
+- 400 for a refused proposal. The kinds include `unknown_pattern`, `unsupported_parameter_kind`, `malformed_event_kind`, `malformed_attribute_key`, `malformed_sequence_lookback`, `malformed_count_threshold`, `malformed_source`, `ungrounded_source`, `instantiate`, `unknown_artifact`, `citation_anchor_too_short`, `unresolved_citation`, `uncited_proposal`, `proposal_budget_exceeded`, `empty_citations`, `blank_rationale`, `citation_locate`, `invalid_artifact_id`, `invalid_artifact_kind`, `invalid_artifact_text`, `invalid_schema_version`, `blank_identity`, and `unknown_corpus`.
+- 409 for a store conflict.
+
+### `GET /v1/candidates/{specification_id}/{specification_version}`
+
+Response: the Candidate with its replay evidence. Errors: 404 `not_found`. 409 `candidate_unverifiable`.
+
+### `POST /v1/candidates/{specification_id}/{specification_version}/review`
+
+Request:
+
+```json
+{
+  "decision": "promote",
+  "note": "Reviewed.",
+  "observed_at": { "sentinel_clock_id": "sentinel", "nanoseconds": 1700000000000000000 }
+}
+```
+
+`decision` is `promote` or `reject`. A promote publishes an Event Filter and sends it to the Probes. A reject publishes nothing.
+
+Response: 200 with the Candidate record. Errors: 400 `invalid_decision` and `blank_note`. 409 `already_reviewed`, `promotion_blocked`, `missing_completeness`, `publish_failed`, `changed_during_review`, and `candidate_review_requires_published_filter`.
+
+### `POST /v1/candidates/{specification_id}/{specification_version}/warm`
+
+Request: `{ "observed_at": { … } }`. Publishes a Filter so that Probes start to send the missing Events.
+
+Errors: 409 `not_offered_for_promotion`, `does_not_require_new_evidence`, `selector_near_miss`, and `already_reviewed`.
+
+## Evaluation
+
+### `POST /v1/evaluate`
+
+Evaluates a Specification now. Periphery also evaluates by itself when evidence arrives.
+
+Request: `{ "specification_id": "…", "specification_version": "…" }`. The version is required for a store-backed Specification.
+
+Response: 200 with `verdicts`, `verdict_count`, `refused`, and `note`. Each Verdict has `id`, `outcome`, `authority`, and `wire_protobuf_hex`. An empty `verdicts` list is not a `Satisfy`.
+
+Periphery serves two Patterns: `precedence.approval` and `absence.after-until`. It answers 409 `unsupported_family` for any other Pattern.
+
+If the store refuses the new revision of one Binding, periphery still records the other Bindings. It then answers 409. The body adds `verdicts`, `verdict_count`, and `refused`. Each refused item has `verdict_id`, `kind`, and `message`. The kind is `verdict_authority_regressed`, `verdict_outcome_changed_same_epoch`, or `verdict_epoch_not_monotone`.
+
+Other errors:
+
+| Status | Kind | Cause |
+| --- | --- | --- |
+| 400 | `missing_specification_version` | A store-backed evaluation needs a version. |
+| 404 | `unknown_specification` | The sample registry does not hold the identity. |
+| 404 | `candidate_not_found` | No Candidate has that identity. |
+| 409 | `unreviewed_candidate`, `rejected_candidate` | A Candidate must be promoted first. |
+| 409 | `no_published_filter`, `not_in_published_filter` | The Specification is not in a published Filter. |
+| 409 | `filter_moved` | The Filter moved during evaluation. |
+| 409 | `no_required_sources`, `missing_source_evidence`, `missing_last_emitted`, `incomplete_evidence_coverage` | Evidence Coverage is incomplete. Missing evidence is never a pass. |
+| 409 | `corpus_data_class` | Corpus-class Events cannot produce Verdicts. |
+
+### `GET /v1/evaluations/queue`
+
+Response: counters of the evaluation worker: `requested`, `completed`, `idle`, `passes`, `coalesced`, `failed_passes`, `liveness_settled_refusals`, and `pushes` (`sent`, `failed`, `unchanged`, `owed`). To wait for your own posts, read `requested` once. Then poll until `completed` reaches it.
+
+## Verdicts
+
+Percent-encode `{id}`. A Verdict id has the form `{specification}:{version}:{binding}`. A Binding can hold characters such as `/`. A reverse proxy in front of periphery must pass encoded slashes through unchanged.
+
+### `GET /v1/verdicts`
+
+Optional query: `specification_id`. Response: `items` and `note` (first page only). Each item has `id`, `binding`, `specification_id`, `outcome`, `authority`, `revision`, `recorded_at`, and `superseded`.
+
+### `GET /v1/verdicts/{id}`
+
+Response: the latest revision and its Assurance Envelope under `assurance`. The envelope holds these facts:
+
+- The Specification version and the schema versions.
+- The inconclusive reason, the hot-path and cold-path state, and the settlement basis.
+- The activation barrier.
+- The required and observed sources, with per-source tables.
+- The gaps and the uncertainty.
+- The decisive witness Event ids.
+- The retention and redaction settings.
+
+Every per-source table has one row for each required source. A row with `status` of `not-recorded` means that the envelope recorded nothing for that source. It does not mean healthy or complete.
+
+The field `unavailable_envelope_facts` names facts that this build cannot supply. Today it lists `trace`, `watermark_observed_at`, and `instrumentation_change_to_settle`.
+
+Errors: 404 `not_found`. 500 `unmapped_verdict_value` or `unmapped_envelope_value`. The response fails closed.
+
+### `GET /v1/verdicts/{id}/revisions`
+
+Response: the revisions of the Verdict.
+
+### `GET /v1/verdicts/{id}/witness`
+
+Optional query: `revision` and `cursor`. Response: `verdict_id`, `revision`, `items`, `relations`, `truncated`, `next_cursor`, and `note`.
+
+### `GET /v1/verdicts/{id}/witness/events`
+
+Query: `revision`, and one or more `event_id` values. Response: `verdict_id`, `items`, and `note`. Each item has a `status`: `present`, `reaped`, `never-retained`, `redacted`, `out-of-scope`, `corpus-refused`, or `not-found`. An Event that periphery cannot show appears with its status, never as an omission.
+
+## Recorded walkthrough
+
+These routes serve the [Quickstart](/sentinel/quickstart). They work with the in-memory store only.
+
+- `GET /v1/demo/walkthrough` returns the scenario catalogue.
+- `POST /v1/demo/walkthrough/runs` takes `{ "scenario": "happy" | "invalid_charge" | "cancellation" | "missing_required_source" }`. It resets the store, runs the scenario, and returns the Verdicts, the `coverage_beat`, and a refusal kind when the scenario ends in a refusal.
+- `POST /v1/demo/walkthrough/reset` resets the store. It answers 409 with a store backed by Postgres.
+
+## Error kinds by status
+
+| Status | Kinds |
+| --- | --- |
+| 400 | `blank_note`, `blank_identity`, `invalid_schema_version`, `invalid_decision`, `unknown_corpus`, `retained_corpus_refused`, `invalid_artifact_id`, `invalid_artifact_kind`, `invalid_artifact_text`, the proposal refusals above, `otlp_decode`, `otlp_gzip`, `capture_decode`, `capture_adapt`, `data_class_required`, `data_class_unrecognized`, `invalid_epoch`, `missing_specification_version` |
+| 401 | `missing_source_handle` |
+| 403 | `unknown_source_handle` |
+| 404 | `not_found`, `unknown_specification`, `candidate_not_found` |
+| 409 | `already_reviewed`, `not_offered_for_promotion`, `changed_during_review`, `promotion_blocked`, `does_not_require_new_evidence`, `selector_near_miss`, `candidate_unverifiable`, `missing_completeness`, `publish_failed`, `missing_publication_instant`, `filter_validation`, `non_monotonic_refused`, `published_filter_epoch_exists`, `verdict_authority_regressed`, `verdict_outcome_changed_same_epoch`, `verdict_epoch_not_monotone`, `candidate_review_requires_published_filter`, `candidate_publish_requires_reviewed_status`, `candidate_filter_identity_missing`, `candidate_filter_union_incomplete`, `source_evidence_non_monotonic`, and the evaluation kinds above |
+| 415 | `unsupported_media_type`, `unsupported_encoding` |
+| 500 | `corrupt`, `store`, `candidate_mapping`, `corpus_load`, `walkthrough_fixture_invalid`, `invalid_evaluation_mode`, `invalid_readiness`, `missing_observation_nanos`, `observation_nanos_overflow`, `unmapped_verdict_value`, `unmapped_envelope_value` |
+| 503 | `store_unavailable`, `reconstructing`, `reconstruction_failed`, `store_not_ready` |
+
+`store_unavailable` is a 503 on purpose. OTLP exporters retry 503 and do not retry 500. A retryable store fault is therefore a 503.
