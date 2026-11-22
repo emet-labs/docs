@@ -1,0 +1,142 @@
+---
+title: "Go SDK"
+description: "Install, configure, and use the Go Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Module | `github.com/emet-labs/sentinel-probe-go` |
+| Version | no tag yet |
+| Runtime | Go 1.25 or later |
+| Built on | OpenTelemetry Go SDK 1.45 |
+| Source | `emet-labs/sentinel-probe-go` on GitHub |
+
+## Install
+
+The mirror carries the generated protobuf types. The module works from a bare clone.
+
+```sh
+go get github.com/emet-labs/sentinel-probe-go
+```
+
+The module has no version tag. Go resolves it to a pseudo-version of the latest commit.
+
+<Note>
+In the Sentinel repository, the module path is `github.com/emet-labs/sentinel/sdk/go`. The generated code in that tree is not committed. Use the public mirror for your own service.
+</Note>
+
+## Set up a Probe
+
+Create one allocator, one tracer, and one heartbeat for each source.
+
+```go
+allocator, err := emission.NewSequenceAllocator(emission.SequenceOptions{})
+if err != nil {
+	return err
+}
+
+tracer := emission.NewProbeTracer(emission.Options{
+	TracerName:   "shop-payment",
+	Endpoint:     "http://127.0.0.1:8080",
+	SourceHandle: "shop-payment",
+	Sequence:     allocator,
+	HostStamp: &emission.HostStamperOptions{
+		SourceHandle:  "shop-payment",
+		SchemaVersion: "shop-v1",
+	},
+})
+
+heartbeat, err := otlp.NewCompletenessHeartbeat(otlp.HeartbeatConfig{
+	Source:       allocator,
+	Endpoint:     "http://127.0.0.1:8080",
+	SourceHandle: "shop-payment",
+})
+if err != nil {
+	return err
+}
+go heartbeat.Run(ctx)
+```
+
+Then create spans with `tracer.Tracer`. End the span to send the Event. On shutdown, call `tracer.Shutdown(ctx)` first. Then call `heartbeat.Shutdown`. This order lets the final heartbeat report what was exported.
+
+## Configuration
+
+These are the main fields of `emission.Options`.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `TracerName` | The instrumentation scope name. | none |
+| `ServiceName` | The resource `service.name`. | OpenTelemetry default |
+| `Endpoint` | The periphery base URL. When empty, nothing is exported. | none |
+| `SourceHandle` | The `x-sentinel-source-handle` value. Required when `Endpoint` is set. | none |
+| `Sequence` | The allocator. Requires `Endpoint`. | none |
+| `Export` | Contract options, for example `AllowUnattributedRemoteParent`. | strict |
+| `Async` | Exporter tuning (see below). | see below |
+| `OnError` | Receives each `*emission.ExportError`. It must not block. | none |
+| `ErrorLogInterval` | The minimum gap between two log lines. | 10 s |
+| `Logf` | The log function. | `log.Printf` |
+| `HTTPClient` | The client that posts to Sentinel. | 5 s timeout |
+| `HostStamp` | Stamps the reserved attributes at span start. | off |
+| `ProviderOptions` | Extra OpenTelemetry provider options. | none |
+
+`emission.AsyncOptions` tunes the exporter.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `QueueSize` | Spans that wait to be sent. | 2048 |
+| `MaxAttempts` | Attempts for each batch. | 5 |
+| `InitialBackoff`, `MaxBackoff` | The retry delay and its cap. | 100 ms, 5 s |
+| `RetainFailed` | Failed spans that the SDK keeps for a later retry. | 1024 |
+| `RetryFailedInterval` | How often the SDK retries kept spans. | 30 s |
+| `Synchronous` | Export on the goroutine that ends the span. For tests and one-shot tools. | `false` |
+
+`otlp.HeartbeatConfig` takes `Interval` (1 s to 59.999 s, default 15 s), `FilterEpoch`, `Manual`, and `OnError`. Call `DeclareIdle` and `DeclareActive` to set the activity. `Stop` makes the source go silent. `Shutdown` sends a final report.
+
+Pass `PreviousEpoch` in `emission.SequenceOptions` to guarantee a greater epoch after a restart.
+
+## Span-to-Event mapping
+
+- The span name becomes the Event kind. A span becomes an Event when it ends.
+- With `Sequence` set, each span gets `sentinel.sequence.epoch` and `sentinel.sequence.number` when it starts. A span that already holds both keeps its reserved slot.
+- With `HostStamp` set, the SDK stamps five attributes at span start. The Event id is `<handle>:<uuid>`. The parent is the Event id of the parent span, or of the remote caller. The schema version, the acknowledged Filter epoch, and the claimed sensitivity complete the five. An attribute that you set is never overwritten.
+- Without `HostStamp`, you set these attributes on each span.
+- The exporter marks the slot exported only after an HTTP 2xx with zero rejected spans.
+- An integer attribute stays an integer. A `float64` attribute stays a double.
+
+## Parent Event id propagation
+
+```go
+propagate.InjectParentEventID(carrier, eventID)
+parent := propagate.ExtractParentEventID(carrier)
+```
+
+- A `propagate.Carrier` has `Get` and `Set`. An `http.Header` fits. For Kafka headers, wrap them in two methods.
+- The functions use the `x-sentinel-parent-event-id` header. They fall back to the `sentinel` member of `tracestate`.
+- To propagate for every instrumented client and server, set the global text-map propagator:
+
+```go
+otel.SetTextMapPropagator(propagate.Propagator{Inner: propagation.TraceContext{}})
+```
+
+With `HostStamp`, the callee then names the caller's Event as its parent. A caller that is not a Probe sends no header. The callee exports a root, only if you set `AllowUnattributedRemoteParent` in `Export`.
+
+## Receive Event Filters
+
+`otlp.Listen` and `otlp.ListenWith` start the log receiver.
+
+```go
+receiver, err := otlp.ListenWith(otlp.ListenConfig{Host: "0.0.0.0", Port: 4318})
+```
+
+The default host is loopback. `receiver.LogsURLFor("shop-payment")` returns the URL to register as `probe_log_url`. The endpoint has no authentication.
+
+## Known limits
+
+- The exporter does not apply the Event Filter. Call `filter.ApplyFilter` in your own code to drop or trim Events.
+- `OnError` runs on the exporter goroutine. A panic in it is absorbed.
+- A Filter-dropped slot holds `complete_through` back.
+- `attempted` is not kept across a crash.
+- Keep the OpenTelemetry sampler always on.
+- The module has no version tag. Pin a commit.

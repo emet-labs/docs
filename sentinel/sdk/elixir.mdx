@@ -1,0 +1,137 @@
+---
+title: "Elixir SDK"
+description: "Install, configure, and use the Elixir (BEAM) Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Package name | `:sentinel_probe_sdk` |
+| Version | 0.1.0 |
+| Runtime | Elixir 1.16 or later, Erlang/OTP 28 |
+| Built on | OpenTelemetry Erlang SDK, `finch`, `protobuf` |
+| Source | `emet-labs/sentinel-probe-elixir` on GitHub |
+
+## Install
+
+The package is not on Hex. Use the public mirror as a Git dependency. The mirror carries the generated protobuf modules.
+
+```elixir
+def deps do
+  [
+    {:sentinel_probe_sdk,
+     git: "https://github.com/emet-labs/sentinel-probe-elixir.git"}
+  ]
+end
+```
+
+## How the SDK is organized
+
+The SDK is library code. It starts no processes of its own. Your application owns the OpenTelemetry provider. Your application also starts and supervises the SDK servers: the log receiver, the sequence allocator, and the completeness heartbeat.
+
+## Set up a Probe
+
+```elixir
+alias Sentinel.Probe.SDK.Client.Client
+alias Sentinel.Probe.SDK.Emission.Sequence
+alias Sentinel.Probe.SDK.Otlp.{Heartbeat, Receiver}
+
+sentinel_url = "http://127.0.0.1:8080"
+handle = "shop-payment"
+
+{:ok, receiver} =
+  Receiver.start_link(port: 4319, persist_path: "/var/lib/shop/probe-filter.pb")
+
+probe = Client.new(%Client.Config{source_handle: handle}, receiver)
+
+{:ok, sequence} = Sequence.start_link()
+
+{:ok, heartbeat} =
+  Heartbeat.start_link(
+    sequence: sequence,
+    otlp: %{endpoint: sentinel_url, source_handle: handle},
+    filter_epoch: fn -> Client.acknowledged_epoch(probe) end
+  )
+```
+
+Then register the span processor with your OpenTelemetry provider. The processor takes a configuration map:
+
+```elixir
+%{
+  schema_version: "shop-v1",
+  allocator: sequence,
+  otlp: %{endpoint: sentinel_url, source_handle: handle},
+  filter_store: probe.store
+}
+```
+
+Register it as `{Sentinel.Probe.SDK.Emission.Processor, config}`. When `:otlp` is set, the provider starts a bounded `AsyncExporter` through the processor.
+
+Set `sentinel.event.id` on each span. To control shutdown, start your own `AsyncExporter` and pass it as `:exporter`. On a clean exit, call `AsyncExporter.shutdown(exporter, heartbeat: heartbeat)`. This call drains the queue and sends the final heartbeat.
+
+## Configuration
+
+The processor configuration is a map. A host field can be a value or a zero-argument function. The processor resolves the function when the span ends.
+
+| Key | Meaning |
+| --- | --- |
+| `:schema_version` | The `sentinel.schema.version` of each Event. |
+| `:claimed_sensitivity`, `:claimed_capabilities` | The claims of each Event. |
+| `:allocator` | The `Sequence` process. The processor stamps the slot when the span starts. |
+| `:acknowledged_epoch` | `nil`, an integer, or a function. Without it, the held Filter epoch is used. |
+| `:otlp` | `%{endpoint: origin, source_handle: handle}`. |
+| `:resource_attributes` | A list of `{key, value}` OTLP resource attributes. |
+| `:filter_store` | A Filter store. An Event that no Specification selects is not exported. The SDK sends the projected attributes only. |
+| `:allow_unattributed_remote_parent` | Export a span with a non-Probe remote parent as a causal root. |
+| `:exporter` | The name or pid of your own `AsyncExporter`. |
+| `:async` | `false` uses a synchronous export. It is for tests. The default is `true`. |
+| `:exporter_opts` | Extra `AsyncExporter` options. |
+| `:on_export_error` | Called with the reason of every export failure. |
+| `:on_event` | Called with each `ProducerEvent`. |
+
+`AsyncExporter` options and defaults:
+
+| Option | Default |
+| --- | --- |
+| `:max_queue` | 2048 |
+| `:batch_size` | 64 |
+| `:max_attempts` | 5 |
+| `:backoff_ms` | 100 |
+| `:max_backoff_ms` | 5000 |
+| `:retry_interval_ms` | 30000 (0 turns the timer off) |
+| `:max_retained_failed` | 1024 |
+| `:log_interval_ms` | 10000 |
+
+Other servers take these options:
+
+- `Heartbeat.start_link/1` takes `:interval_ms` (0, or 1000 to 59999, default 15000), `:now`, `:schedule`, and `:send`. An absent Filter is acknowledged as epoch 0. Call `declare_idle/1` and `declare_active/1` to set the activity.
+- `Sequence.start_link/1` takes `:epoch`, `:previous_epoch`, and `:now`.
+- `Receiver.start_link/1` takes `:ip` (default `{127, 0, 0, 1}`), `:port` (default 0, a free port), and `:persist_path`. For a container, use `ip: {0, 0, 0, 0}` and a fixed port.
+
+## Span-to-Event mapping
+
+- The span name becomes the Event kind.
+- The processor reads the `name`, `start_time`, `attributes`, `parent_span_id`, and `links` of the OpenTelemetry span record. It converts them into a `ProducerEvent`.
+- You set `sentinel.event.id` on the span. The processor takes the schema version, the sensitivity, and the capabilities from its configuration.
+- `on_start/3` allocates the slot and sets `sentinel.sequence.epoch` and `sentinel.sequence.number`. A span that already holds both keeps its slot.
+- A span with a remote parent and no parent Event id is refused. Set `allow_unattributed_remote_parent: true` to export a causal root. A local parent without the id is always refused.
+- The processor never raises. `on_start/3` and `on_end/2` catch every error and exit. They mark the slot failed and report to `:on_export_error`.
+
+## Parent Event id propagation
+
+```elixir
+alias Sentinel.Probe.SDK.Propagation
+
+headers = Propagation.inject_parent_event_id(headers, event_id)
+parent = Propagation.extract_parent_event_id(request_headers)
+```
+
+The header is `x-sentinel-parent-event-id`. `Propagation.header_name/0` returns its name. `extract_parent_event_id/1` falls back to the `sentinel` entry of `tracestate`. Headers can be a map or a list. Values can be binaries or charlists.
+
+## Known limits
+
+- OTP 28 is required for the public mirror.
+- The `Receiver` writes the latest Filter to `:persist_path` when you set it. Without the path, a restarted Probe holds no Filter and acknowledges epoch 0 until Sentinel publishes again.
+- The Sequence helper does not retry exports. The `AsyncExporter` retries failed slots on a timer and at flush.
+- A filtered slot does not advance `complete_through`.

@@ -1,0 +1,153 @@
+---
+title: "Python SDK"
+description: "Install, configure, and use the Python Probe SDK for Sentinel."
+---
+
+For the rules that all SDKs share, see [Probe SDKs](/sentinel/sdk/index).
+
+| Item | Value |
+| --- | --- |
+| Package name | `sentinel-probe-sdk` |
+| Version | 0.1.0 |
+| Runtime | Python 3.9 or later |
+| Built on | OpenTelemetry Python SDK, `httpx`, `protobuf` |
+| Import name | `sentinel_probe_sdk` |
+| Source | `emet-labs/sentinel-probe-python` on GitHub |
+
+## Install
+
+The package is not on PyPI. Install it from the public mirror. The mirror carries the generated protobuf modules.
+
+```sh
+git clone https://github.com/emet-labs/sentinel-probe-python.git
+cd sentinel-probe-python
+python3 -m venv .venv
+.venv/bin/python -m pip install --editable .
+```
+
+The generated modules are a `sentinel` namespace package under `gen/`. Put `gen/` on the import path when you run your application:
+
+```sh
+PYTHONPATH=gen .venv/bin/python your_app.py
+```
+
+## Set up a Probe
+
+The Python SDK has no helper that stamps the Event attributes for you. You pass the Event id, the schema version, and the acknowledged Filter epoch to `ProbeTracer.emit`. With a sequence allocator set, `emit` allocates the slot.
+
+```python
+import time
+import uuid
+
+from sentinel_probe_sdk import (
+    CompletenessHeartbeat,
+    ExportOptions,
+    FilterStore,
+    LogReceiver,
+    Options,
+    SequenceAllocator,
+    new_probe_tracer,
+)
+
+filters = FilterStore()
+receiver = LogReceiver(host="127.0.0.1", port=4319).start()
+receiver.add_filter_listener(filters.set)
+
+sequence = SequenceAllocator()
+tracer = new_probe_tracer(
+    Options(
+        tracer_name="shop-payment",
+        service_name="shop-payment",
+        endpoint="http://127.0.0.1:8080",
+        source_handle="shop-payment",
+        sequence=sequence,
+        export=ExportOptions(filter_store=filters),
+    )
+)
+
+heartbeat = CompletenessHeartbeat(
+    sequence,
+    send=tracer.otlp.export_completeness,
+    filter_epoch=filters.epoch,
+)
+heartbeat.start()
+
+tracer.emit(
+    "payment.charge.completed",
+    event_id=str(uuid.uuid4()),
+    schema_version="shop-v1",
+    acknowledged_filter_epoch=filters.epoch() or 0,
+    start_time_unix_nano=time.time_ns(),
+    attributes={"order.id": "order-1001"},
+)
+
+# On a clean exit: flush the exports, then send the final heartbeat.
+tracer.provider.force_flush()
+heartbeat.shutdown()
+tracer.provider.shutdown()
+receiver.close()
+```
+
+If you use your own OpenTelemetry spans, build the contract attributes with `contract_attributes(...)` and pass them when you start the span. Add `OtlpSpanProcessor(client, sequence=sequence)` to your provider.
+
+## Configuration
+
+`Options` configures the tracer.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `tracer_name` | The instrumentation scope name. | empty |
+| `service_name` | The resource `service.name`. It merges over the default resource. | empty |
+| `provider_options` | Span processors, samplers, or a resource to add to the provider. | none |
+| `endpoint` | The periphery base URL. When empty, the tracer does not export. | empty |
+| `source_handle` | The `x-sentinel-source-handle` value. Required when `endpoint` is set. | empty |
+| `http_client` | An `httpx.Client`. You keep ownership of it. | SDK client |
+| `sequence` | The `SequenceAllocator`. Requires `endpoint`. | none |
+| `export` | An `ExportOptions` object. | see below |
+
+`ExportOptions` tunes the exporter.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `allow_unattributed_remote_parent` | Export a span with a non-Probe remote parent as a causal root. | `False` |
+| `filter_store` | A `FilterStore`. Events that no Specification selects are not exported. | none |
+| `on_error` | Called for every export failure. It must not raise. | none |
+| `synchronous` | Export on the thread that ends the span. For tests and short scripts. | `False` |
+| `queue_size` | The capacity of the bounded queue. | 4096 |
+| `max_attempts` | Attempts for each Event, including the first. | 5 |
+| `backoff_seconds` | The base wait between attempts. | 0.1 |
+| `max_backoff_seconds` | The cap on every wait. | 5 |
+| `failed_retry_interval_seconds` | How often kept failed spans are retried. 0 turns it off. | 15 |
+| `max_failed_retry_rounds` | Retry rounds before a span is given up. | 8 |
+| `max_retained_failed` | The most failed spans that the SDK keeps. | 1024 |
+| `flush_timeout_seconds` | How long `shutdown` waits for the queue. | 10 |
+
+`SequenceAllocator` takes `epoch` and `previous_epoch`. `CompletenessHeartbeat` takes `interval_ms` (0, or 1000 to 59999, default 15000), `now_unix_ns`, and `on_error`.
+
+## Span-to-Event mapping
+
+- The span name becomes the Event kind.
+- A span must carry `sentinel.event.id`, `sentinel.schema.version`, `sentinel.acknowledged_filter_epoch`, and the two sequence attributes when it ends. `emit` and `contract_attributes` set them.
+- With `sequence`, the processor stamps the slot when the span starts. It skips a span that already holds both sequence attributes.
+- `emit` takes `parent_event_id`, `claimed_sensitivity` (default `SENSITIVITY_INTERNAL`), `claimed_capabilities`, and `links`. Each link is the Event id of an extra causal parent.
+- `emit` does not read a clock. `start_time_unix_nano` is the Occurrence Time. `end_time_unix_nano` defaults to the start time plus one nanosecond.
+- A `sentinel.*` key in `attributes` is refused.
+
+## Parent Event id propagation
+
+```python
+from sentinel_probe_sdk import extract_parent_event_id, inject_parent_event_id
+
+inject_parent_event_id(headers, event_id)      # outgoing call
+parent = extract_parent_event_id(request_headers)  # incoming call
+```
+
+The functions use the `x-sentinel-parent-event-id` header. `PARENT_EVENT_ID_HEADER` holds its name. The carrier is a mapping or a list of header pairs. The extract function falls back to the `sentinel` member of `tracestate`.
+
+## Known limits
+
+- Python 3.9 is the floor. The Connect library for Python needs Python 3.10, so the SDK uses its own `httpx` transport.
+- The span path drops whole Events by the Filter. It does not trim attributes. It sends the span untrimmed.
+- A span that the sampler drops never reaches the processor. Keep the sampler always on.
+- The log receiver binds to `127.0.0.1` by default. It has no authentication.
+- The default processor exports on a worker thread. It never raises into your code.
